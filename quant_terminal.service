@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Quantum Research Terminal Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tv_quant_env
+ExecStart=/root/tv_quant_env/venv/bin/streamlit run app_dashboard.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
