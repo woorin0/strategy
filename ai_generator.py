@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from quant_engine import run_simulation
 
 def generate_pine_script_v6(strategy_title, params, metrics_summary):
@@ -187,15 +189,40 @@ bgcolor(st_dir == -1 ? color.new(color.green, 93) : color.new(color.red, 93), ti
 '''
     return code
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=20, progress_callback=None):
+def _worker_simulate(task_args):
+    """멀티프로세싱 워커 개별 실행 단위"""
+    df, cand = task_args
+    sim_res = run_simulation(df, cand, split_ratio=0.70)
+    
+    oos_sh = sim_res['oos']['sharpe']
+    oos_mdd = abs(sim_res['oos']['mdd'])
+    ratio = sim_res['overfitting_ratio']
+    trades = sim_res['oos']['trades_count']
+    
+    score = oos_sh * 2.0 - (oos_mdd * 0.05) + (min(ratio, 2.0) * 0.5)
+    if trades < 20: score -= 2.0
+    
+    return {
+        'score': score,
+        'params': cand,
+        'sim_res': sim_res
+    }
+
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=20, num_workers=None, progress_callback=None):
     """
-    AI 에이전트가 데이터셋을 탐색하여 최적의 파라미터를 학습/합성하고 Pine Script 코드를 생성
+    [멀티코어 병렬 가속 엔진]
+    서버의 CPU 코어 수(num_workers)를 자동 감지하여 모든 코어에 병렬로 분산 연산 수행
     """
+    total_cores = os.cpu_count() or 1
+    if num_workers is None or num_workers <= 0:
+        # 가용 코어 수에 맞게 자동 지정 (최대 16)
+        num_workers = min(max(total_cores, 1), 16)
+        
     candidates = []
-    for st_p in [5, 7, 10, 14]:
-        for st_m in [2.5, 3.0, 3.5]:
+    for st_p in [5, 7, 9, 10, 12, 14]:
+        for st_m in [2.0, 2.5, 3.0, 3.5, 4.0]:
             for use_tr in [True, False]:
-                for tp_m in ['ATR', 'Fixed']:
+                for tp_m in ['ATR', 'Fixed', 'Both']:
                     candidates.append({
                         'st_period': st_p,
                         'st_mult': st_m,
@@ -217,33 +244,39 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
                     
     selected_candidates = candidates[:max_iterations]
     eval_results = []
+    total_tasks = len(selected_candidates)
     
-    for idx, cand in enumerate(selected_candidates):
-        if progress_callback:
-            progress_callback(int((idx + 1) / len(selected_candidates) * 100), f"AI 진화 세대 {idx+1}/{len(selected_candidates)} 검증 중...")
-            
-        sim_res = run_simulation(df, cand, split_ratio=0.70)
-        
-        # 종합 피트니스 스코어: OOS 샤프, MDD 방어율, 과적합 방어 지수 결합
-        oos_sh = sim_res['oos']['sharpe']
-        oos_mdd = abs(sim_res['oos']['mdd'])
-        ratio = sim_res['overfitting_ratio']
-        trades = sim_res['oos']['trades_count']
-        
-        # 페널티 부여
-        score = oos_sh * 2.0 - (oos_mdd * 0.05) + (min(ratio, 2.0) * 0.5)
-        if trades < 20: score -= 2.0
-        
-        eval_results.append({
-            'score': score,
-            'params': cand,
-            'sim_res': sim_res
-        })
-        
+    start_t = time.time()
+    
+    # 🚀 멀티코어 병렬 분산 처리 (ProcessPoolExecutor)
+    # 단일 코어 환경에서는 오버헤드를 피하기 위해 직렬 실행, 멀티코어에서는 병렬 가속
+    if num_workers > 1:
+        tasks = [(df, c) for c in selected_candidates]
+        completed = 0
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            future_to_cand = {executor.submit(_worker_simulate, t): t for t in tasks}
+            for future in as_completed(future_to_cand):
+                res = future.result()
+                eval_results.append(res)
+                completed += 1
+                if progress_callback:
+                    pct = int(completed / total_tasks * 100)
+                    elapsed = time.time() - start_t
+                    progress_callback(pct, f"⚡ [{num_workers}개 CPU 코어 풀가동] 진화 세대 {completed}/{total_tasks} 병렬 연산 중 ({elapsed:.1f}초)")
+    else:
+        # 단일 코어 순차 실행
+        for idx, cand in enumerate(selected_candidates):
+            res = _worker_simulate((df, cand))
+            eval_results.append(res)
+            if progress_callback:
+                pct = int((idx + 1) / total_tasks * 100)
+                progress_callback(pct, f"진화 세대 {idx+1}/{total_tasks} 검증 중...")
+
+    elapsed_time = round(time.time() - start_t, 2)
+    
     # 최고 성과 모델 선별
     eval_results.sort(key=lambda x: x['score'], reverse=True)
     best = eval_results[0]
-    
     best_params = best['params']
     best_sim = best['sim_res']
     
@@ -255,7 +288,9 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         'oos_mdd': best_sim['oos']['mdd'],
         'oos_win_rate': best_sim['oos']['win_rate'],
         'is_sharpe': best_sim['is']['sharpe'],
-        'overfitting_ratio': best_sim['overfitting_ratio']
+        'overfitting_ratio': best_sim['overfitting_ratio'],
+        'workers_used': num_workers,
+        'elapsed_time_sec': elapsed_time
     }
     
     clean_sym = symbol.replace("/", "")
@@ -267,5 +302,7 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         'best_sim': best_sim,
         'summary': summary,
         'pine_code': generated_pine,
-        'total_evaluated': len(selected_candidates)
+        'total_evaluated': total_tasks,
+        'workers_used': num_workers,
+        'elapsed_time_sec': elapsed_time
     }

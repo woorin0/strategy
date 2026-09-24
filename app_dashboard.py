@@ -11,9 +11,13 @@ from ai_generator import run_ai_evolution_search, generate_pine_script_v6
 
 st.set_page_config(page_title="AI 퀀트 리서치 터미널 v6.0", page_icon="⚡", layout="wide")
 
+# CPU 코어 감지
+detected_cores = os.cpu_count() or 1
+
 # ----------------- [사이드바 컨트롤 패널] -----------------
 with st.sidebar:
     st.title("⚙️ 퀀트 컨트롤 패널")
+    st.success(f"🖥️ 서버 CPU 코어: **{detected_cores} Core** 감지됨")
     
     st.markdown("### 1. 분석 대상 차트 설정")
     symbol = st.selectbox("거래 종목 (Symbol)", ["BTC/USDT", "ETH/USDT", "SOL/USDT"], index=0)
@@ -54,16 +58,22 @@ with st.sidebar:
 
         btn_manual_run = st.button("🚀 백테스트 실행", type="primary", use_container_width=True)
         btn_ai_run = False
+        workers_to_use = 1
     else:
         st.markdown("### 2. AI 에이전트 자율 진화 설정")
-        ai_iterations = st.slider("탐색 세대 수 (Iterations)", 5, 50, 20, 5)
-        st.info("💡 AI 에이전트가 설정된 차트 시계열을 70% In-Sample과 30% Out-of-Sample로 분할 분석하여, 과적합을 차단한 최적의 새로운 파인스크립트 v6 전략을 자동으로 합성합니다.")
+        ai_iterations = st.slider("탐색 세대 수 (Iterations)", 5, 100, 30, 5)
+        
+        # 병렬 코어 수 설정 (고스펙 서버 대응)
+        default_workers = min(detected_cores, 8)
+        workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
+        
+        st.info(f"⚡ **{workers_to_use}개 CPU 코어 풀가동 모드**: 모든 가용 코어를 활용해 병렬 분산 처리하여 초고속으로 전략을 합성합니다.")
         btn_ai_run = st.button("🤖 AI 자율 분석 및 전략 코드 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
 # ----------------- [메인 대시보드] -----------------
 st.title("⚡ AI QUANTUM RESEARCH TERMINAL v6.0")
-st.caption(f"선택 심볼: **{symbol}** | 주기: **{timeframe}** | 모드: **{mode}**")
+st.caption(f"선택 심볼: **{symbol}** | 주기: **{timeframe}** | 감지된 서버 코어: **{detected_cores} Cores**")
 
 def draw_metric(col, label, val_is, val_oos, color="#34C759"):
     col.markdown(f"""
@@ -82,13 +92,13 @@ if btn_ai_run:
     def update_p(val, txt):
         prog_bar.progress(val, text=txt)
         
-    ai_res = run_ai_evolution_search(df, symbol=symbol, timeframe=timeframe, max_iterations=ai_iterations, progress_callback=update_p)
+    ai_res = run_ai_evolution_search(df, symbol=symbol, timeframe=timeframe, max_iterations=ai_iterations, num_workers=workers_to_use, progress_callback=update_p)
     st.session_state["ai_result"] = ai_res
     st.session_state["last_result"] = ai_res["best_sim"]
     st.session_state["generated_code"] = ai_res["pine_code"]
     prog_bar.empty()
     st.balloons()
-    st.success(f"🏆 AI 에이전트가 {ai_res['total_evaluated']}세대의 자율 진화를 완료하고 최적의 Pine Script v6 전략 코드를 합성했습니다!")
+    st.success(f"🏆 AI 에이전트가 {ai_res['workers_used']}개 코어로 {ai_res['total_evaluated']}세대를 **{ai_res['elapsed_time_sec']}초 만에 병렬 완파**하고 최적의 Pine Script v6 전략 코드를 합성했습니다!")
 
 # ----------------- [수동 백테스트 모드 로직] -----------------
 if btn_manual_run:
@@ -168,4 +178,4 @@ if "last_result" in st.session_state:
                 f.write(code_text)
             st.success("✅ 'strategy_v6.pine' 파일로 성공적으로 저장되었습니다!")
 else:
-    st.info("👈 좌측 사이드바에서 [🤖 AI 자율 분석 및 전략 코드 생성] 버튼을 누르시면, AI 에이전트가 차트를 분석하여 최적의 파인스크립트 코드를 자동으로 합성합니다.")
+    st.info("👈 좌측 사이드바에서 [🤖 AI 자율 분석 및 전략 코드 생성] 버튼을 누르시면, 서버의 모든 CPU 코어를 풀가동하여 초고속으로 파인스크립트 코드를 자동 합성합니다.")
