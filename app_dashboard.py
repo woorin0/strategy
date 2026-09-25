@@ -36,9 +36,25 @@ with st.sidebar:
     st.success(f"🖥️ 서버 CPU 코어: **{detected_cores} Core** 감지됨")
     
     st.markdown("### 1. 분석 대상 차트 설정")
-    symbol = st.selectbox("거래 종목 (Symbol)", ["BTC/USDT", "ETH/USDT", "SOL/USDT"], index=0)
-    timeframe = st.selectbox("타임프레임 (주기)", ["15m", "1h", "4h"], index=1)
-    
+    sym_presets = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT", "BNB/USDT", "ADA/USDT", "AVAX/USDT", "SUI/USDT", "직접 입력 (Custom)"]
+    sym_choice = st.selectbox("거래 종목 선택", sym_presets, index=0)
+    if sym_choice == "직접 입력 (Custom)":
+        symbol_input = st.text_input("직접 입력할 심볼 (예: LINK/USDT, PEPE/USDT)", value="LINK/USDT").strip().upper()
+        symbol = symbol_input if symbol_input else "BTC/USDT"
+    else:
+        symbol = sym_choice
+
+    tf_presets = ["5m", "15m", "30m", "1h", "2h", "4h", "1d", "직접 입력 (Custom)"]
+    tf_choice = st.selectbox("타임프레임 (주기)", tf_presets, index=3)
+    if tf_choice == "직접 입력 (Custom)":
+        tf_input = st.text_input("타임프레임 직접 입력 (1m, 3m, 5m, 15m, 1h, 2h, 4h, 1d 등)", value="1h").strip().lower()
+        timeframe = tf_input if tf_input else "1h"
+    else:
+        timeframe = tf_choice
+
+    start_year = st.selectbox("데이터 시작 연도", ["2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"], index=6, help="Binance 상장 시점부터 현재까지의 시계열 데이터를 자동 수집 및 로컬 캐싱합니다.")
+    start_date = f"{start_year}-01-01"
+
     st.markdown("---")
     mode = st.radio("모드 선택", ["🤖 AI 에이전트 자율 전략 생성", "🛠️ 수동 파라미터 백테스트"], index=0)
     
@@ -105,14 +121,36 @@ with st.sidebar:
         btn_ai_run = False
         workers_to_use = 1
     else:
-        st.markdown("### 2. AI 에이전트 자율 진화 설정")
-        ai_iterations = st.slider("탐색 세대 수 (Iterations)", 5, 100, 30, 5)
+        st.markdown("### 2. 🧬 AI 다세대 유전 진화 설정")
+        preset = st.radio(
+            "탐색 강도 프리셋",
+            ["⚡ 빠른 탐색 (50회)", "🔬 심층 퀀트 진화 (150회 / 추천)", "🧬 울트라 초정밀 진화 (300회)", "🔥 극한 정밀 진화 (500회)", "🎛️ 직접 설정"],
+            index=1,
+            help="심층 진화일수록 다세대(Multi-Generation) 교차 및 돌연변이를 거쳐 견고하고 실전성 높은 전략을 도출합니다."
+        )
+        
+        if "50회" in preset:
+            ai_iterations = 50
+        elif "150회" in preset:
+            ai_iterations = 150
+        elif "300회" in preset:
+            ai_iterations = 300
+        elif "500회" in preset:
+            ai_iterations = 500
+        else:
+            ai_iterations = st.slider("탐색 개체 수 (Iterations)", 20, 1000, 150, 10)
+            
+        min_trades = st.number_input(
+            "최소 검증 거래수 (Min OOS Trades)", 
+            min_value=10, max_value=150, value=25, step=5,
+            help="표본 부족으로 우연히 발생한 가짜 고수익/과적합 전략을 배제합니다. OOS 구간에서 최소 이 횟수 이상 거래된 전략만 최종 선별됩니다."
+        )
         
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"⚡ **SMC & Squeeze Momentum 결합 병렬 모드**: SuperTrend, Smart Money Concepts, Squeeze Momentum 지표의 시너지를 {workers_to_use}개 CPU 코어로 자율 탐색하여 최적의 파인스크립트 코드를 합성합니다.")
-        btn_ai_run = st.button("🤖 AI 자율 분석 및 전략 코드 생성", type="primary", use_container_width=True)
+        st.info(f"🧬 **다세대 유전 진화 알고리즘 풀가동**: 7개 필터 지표(SMC, Squeeze, RSI, ADX 등)의 최적 조합과 리스크 관리 파라미터를 {workers_to_use}개 CPU 코어로 {ai_iterations}회 다세대 유전 교차/돌연변이 탐색하여 실전형 Pine Script v6 코드를 합성합니다.")
+        btn_ai_run = st.button("🤖 AI 심층 진화 & 실전 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
     st.markdown("---")
@@ -140,72 +178,94 @@ def draw_metric(col, label, val_is, val_oos, color="#34C759"):
 
 # ----------------- [AI 에이전트 자율 생성 모드 로직] -----------------
 if btn_ai_run:
-    prog_bar = st.progress(0, text="데이터 수집 및 지표 환경 구성 중...")
-    df = get_cached_data(symbol, timeframe)
-    
-    def update_p(val, txt):
-        prog_bar.progress(val, text=txt)
-        
-    ai_res = run_ai_evolution_search(df, symbol=symbol, timeframe=timeframe, max_iterations=ai_iterations, num_workers=workers_to_use, progress_callback=update_p)
-    st.session_state["ai_result"] = ai_res
-    st.session_state["last_result"] = ai_res["best_sim"]
-    st.session_state["generated_code"] = ai_res["pine_code"]
-    prog_bar.empty()
-    st.balloons()
-    st.success(f"🏆 AI 에이전트가 SMC & Squeeze 지표를 결합하여 {ai_res['workers_used']}개 코어로 {ai_res['total_evaluated']}세대를 **{ai_res['elapsed_time_sec']}초 만에 병렬 완파**하고 최적의 Pine Script v6 코드를 합성했습니다!")
-    
-    if use_discord:
-        send_strategy_alert(
-            webhook_url=webhook_url,
-            mode_name="🤖 AI 자율 진화",
-            symbol=symbol,
-            timeframe=timeframe,
-            oos_metrics=ai_res['best_sim']['oos'],
-            is_metrics=ai_res['best_sim']['is'],
-            params=ai_res['best_params'],
-            elapsed_sec=ai_res['elapsed_time_sec']
-        )
-        st.toast("🔔 디스코드로 최적 전략 생성 알림이 전송되었습니다!")
+    prog_bar = st.progress(0, text=f"'{symbol}' ({timeframe}) {start_year}년~현재 데이터 수집 및 지표 환경 구성 중...")
+    try:
+        df = get_cached_data(symbol, timeframe, start_date=start_date)
+    except Exception as e:
+        st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. 심볼명을 확인해 주세요. (에러: {e})")
+        df = None
 
-# ----------------- [수동 백테스트 모드 로직] -----------------
-if btn_manual_run:
-    with st.spinner("⏳ 고속 시계열 데이터 로드 및 백테스트 연산 중..."):
-        df = get_cached_data(symbol, timeframe)
-        params = {
-            'st_period': st_period, 'st_mult': st_mult,
-            'use_squeeze': use_squeeze, 'sqz_len': sqz_len, 'bb_mult': bb_mult, 'kc_mult': kc_mult,
-            'use_smc': use_smc, 'smc_swing_len': smc_swing_len, 'smc_mode': smc_mode,
-            'use_rsi': use_rsi, 'rsi_len': rsi_len, 'rsi_mode': rsi_mode, 'rsi_ob': rsi_ob, 'rsi_os': rsi_os,
-            'use_adx': use_adx, 'adx_len': adx_len, 'adx_threshold': adx_threshold,
-            'use_vol': use_vol, 'vol_ma_len': vol_ma_len, 'vol_mult': vol_mult,
-            'ema_len': ema_len, 'use_ema_filter': use_ema_filter,
-            'min_width_pct': min_width_pct, 'use_min_volat': use_min_volat,
-            'tr_ma_len': tr_ma_len, 'use_tr_exit': use_tr_exit,
-            'tp_mode': tp_mode, 'sl_mode': sl_mode,
-            'tp_fixed_pct': tp_fixed_pct, 'sl_fixed_pct': sl_fixed_pct,
-            'tp_atr_mult': tp_atr_mult, 'sl_atr_mult': sl_atr_mult,
-            'use_time_exit': use_time_exit, 'max_bars_hold': max_bars_hold
-        }
-        res = run_simulation(df, params, split_ratio=0.70)
-        st.session_state["last_result"] = res
-        summary = {
-            'symbol': symbol, 'timeframe': timeframe,
-            'oos_sharpe': res['oos']['sharpe'], 'oos_return': res['oos']['return_pct'],
-            'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate']
-        }
-        st.session_state["generated_code"] = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
+    if df is not None:
+        def update_p(val, txt):
+            prog_bar.progress(val, text=txt)
+            
+        ai_res = run_ai_evolution_search(
+            df, 
+            symbol=symbol, 
+            timeframe=timeframe, 
+            max_iterations=ai_iterations, 
+            min_trades=min_trades,
+            num_workers=workers_to_use, 
+            progress_callback=update_p
+        )
+        st.session_state["ai_result"] = ai_res
+        st.session_state["last_result"] = ai_res["best_sim"]
+        st.session_state["generated_code"] = ai_res["pine_code"]
+        prog_bar.empty()
+        st.balloons()
+        st.success(
+            f"🏆 AI 다세대 유전 진화 완료! ({ai_res['workers_used']}개 CPU 코어로 {ai_res.get('generations', 3)}세대 총 {ai_res['total_evaluated']}개 후보 심층 교차/돌연변이 탐색, "
+            f"소요 시간: **{ai_res['elapsed_time_sec']}초**, 로드된 캔들: {len(df):,}개)"
+        )
         
         if use_discord:
             send_strategy_alert(
                 webhook_url=webhook_url,
-                mode_name="🛠️ 수동 백테스트",
+                mode_name="🤖 AI 자율 진화",
                 symbol=symbol,
                 timeframe=timeframe,
-                oos_metrics=res['oos'],
-                is_metrics=res['is'],
-                params=params
+                oos_metrics=ai_res['best_sim']['oos'],
+                is_metrics=ai_res['best_sim']['is'],
+                params=ai_res['best_params'],
+                elapsed_sec=ai_res['elapsed_time_sec']
             )
-            st.toast("🔔 디스코드로 전략 생성 알림이 전송되었습니다!")
+            st.toast("🔔 디스코드로 최적 전략 생성 알림이 전송되었습니다!")
+
+# ----------------- [수동 백테스트 모드 로직] -----------------
+if btn_manual_run:
+    with st.spinner(f"⏳ '{symbol}' ({timeframe}) {start_year}년~현재 시계열 데이터 로드 및 백테스트 연산 중..."):
+        try:
+            df = get_cached_data(symbol, timeframe, start_date=start_date)
+        except Exception as e:
+            st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. 심볼명을 확인해 주세요. (에러: {e})")
+            df = None
+
+        if df is not None:
+            params = {
+                'st_period': st_period, 'st_mult': st_mult,
+                'use_squeeze': use_squeeze, 'sqz_len': sqz_len, 'bb_mult': bb_mult, 'kc_mult': kc_mult,
+                'use_smc': use_smc, 'smc_swing_len': smc_swing_len, 'smc_mode': smc_mode,
+                'use_rsi': use_rsi, 'rsi_len': rsi_len, 'rsi_mode': rsi_mode, 'rsi_ob': rsi_ob, 'rsi_os': rsi_os,
+                'use_adx': use_adx, 'adx_len': adx_len, 'adx_threshold': adx_threshold,
+                'use_vol': use_vol, 'vol_ma_len': vol_ma_len, 'vol_mult': vol_mult,
+                'ema_len': ema_len, 'use_ema_filter': use_ema_filter,
+                'min_width_pct': min_width_pct, 'use_min_volat': use_min_volat,
+                'tr_ma_len': tr_ma_len, 'use_tr_exit': use_tr_exit,
+                'tp_mode': tp_mode, 'sl_mode': sl_mode,
+                'tp_fixed_pct': tp_fixed_pct, 'sl_fixed_pct': sl_fixed_pct,
+                'tp_atr_mult': tp_atr_mult, 'sl_atr_mult': sl_atr_mult,
+                'use_time_exit': use_time_exit, 'max_bars_hold': max_bars_hold
+            }
+            res = run_simulation(df, params, split_ratio=0.70)
+            st.session_state["last_result"] = res
+            summary = {
+                'symbol': symbol, 'timeframe': timeframe,
+                'oos_sharpe': res['oos']['sharpe'], 'oos_return': res['oos']['return_pct'],
+                'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate']
+            }
+            st.session_state["generated_code"] = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
+            
+            if use_discord:
+                send_strategy_alert(
+                    webhook_url=webhook_url,
+                    mode_name="🛠️ 수동 백테스트",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    oos_metrics=res['oos'],
+                    is_metrics=res['is'],
+                    params=params
+                )
+                st.toast("🔔 디스코드로 전략 생성 알림이 전송되었습니다!")
 
 # ----------------- [결과 렌더링 섹션] -----------------
 if "last_result" in st.session_state:

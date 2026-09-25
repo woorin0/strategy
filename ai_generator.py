@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import time
+import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from quant_engine import run_simulation
 
@@ -56,11 +57,12 @@ def generate_pine_script_v6(strategy_title, params, metrics_summary):
     max_bars = params.get('max_bars_hold', 72)
     
     code = f'''//@version=6
-// 🤖 AI Autonomous Quantitative Strategy Generator v6.0
+// 🤖 AI Deep Quantum Evolutionary Strategy Generator v6.0
 // [AI Engine Report]
 // - Symbol: {metrics_summary.get('symbol', 'BTC/USDT')} ({metrics_summary.get('timeframe', '1h')})
 // - OOS Sharpe: {metrics_summary.get('oos_sharpe', 0.0)} | OOS Return: {metrics_summary.get('oos_return', 0.0)}%
 // - OOS MDD: {metrics_summary.get('oos_mdd', 0.0)}% | OOS Win Rate: {metrics_summary.get('oos_win_rate', 0.0)}%
+// - OOS Trades: {metrics_summary.get('oos_trades', 0)} trades (Statistically Significant Sample)
 strategy("{strategy_title}", 
          overlay=true, 
          initial_capital=10000, 
@@ -312,18 +314,168 @@ bgcolor(st_dir == -1 ? color.new(color.green, 93) : color.new(color.red, 93), ti
 '''
     return code
 
+# =========================================================================
+# 유전 진화 탐색 엔진 (Genetic Evolutionary Algorithm Engine)
+# =========================================================================
+
+# 유전자 정의 (Gene Map)
+GENE_OPTIONS = {
+    'st_period': [5, 7, 9, 10, 12, 14],
+    'st_mult': [1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+    'ema_len': [50, 100, 150, 200, 250, 300],
+    'min_width_pct': [0.5, 0.8, 1.0, 1.2, 1.5, 2.0],
+    'sqz_len': [14, 20, 25],
+    'bb_mult': [1.5, 2.0, 2.5],
+    'kc_mult': [1.0, 1.5, 2.0],
+    'smc_swing_len': [3, 5, 7, 10],
+    'smc_mode': ['Structure', 'FVG', 'Both'],
+    'rsi_len': [7, 9, 14, 21],
+    'rsi_mode': ['Boundary', 'Momentum'],
+    'rsi_ob': [65.0, 70.0, 75.0, 80.0],
+    'rsi_os': [20.0, 25.0, 30.0, 35.0],
+    'adx_len': [10, 14, 20],
+    'adx_threshold': [15.0, 20.0, 25.0, 30.0],
+    'vol_ma_len': [10, 20, 30, 50],
+    'vol_mult': [0.8, 1.0, 1.2, 1.5],
+    'tr_ma_len': [50, 80, 100, 120, 150, 200],
+    'tp_mode': ['Fixed', 'ATR', 'Both'],
+    'sl_mode': ['Fixed', 'ATR', 'Both'],
+    'tp_fixed_pct': [1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
+    'sl_fixed_pct': [1.0, 1.5, 2.0, 2.5, 3.0],
+    'tp_atr_mult': [2.0, 2.5, 3.0, 3.5, 4.0, 5.0],
+    'sl_atr_mult': [1.2, 1.5, 2.0, 2.5, 3.0],
+    'max_bars_hold': [24, 36, 48, 72, 96, 120, 168]
+}
+
+FILTER_KEYS = [
+    'use_ema_filter',
+    'use_min_volat',
+    'use_squeeze',
+    'use_smc',
+    'use_rsi',
+    'use_adx',
+    'use_vol'
+]
+
+def _sample_random_candidate():
+    """
+    [필터 희소성(Sparsity) 원칙 적용 무작위 후보 생성]
+    모든 필터를 동시에 켜면 거래가 전멸(신호 기근)하므로 1~3개의 상호보완적 필터만 선택
+    """
+    cand = {}
+    for k, v in GENE_OPTIONS.items():
+        cand[k] = random.choice(v)
+        
+    # 필터 7개 중 1~3개 지능적 활성화
+    for f in FILTER_KEYS:
+        cand[f] = False
+    active_filters = random.sample(FILTER_KEYS, k=random.choice([1, 2, 3]))
+    for f in active_filters:
+        cand[f] = True
+        
+    cand['use_tr_exit'] = random.choice([True, False])
+    cand['use_time_exit'] = random.choice([True, False])
+    return cand
+
+def _evaluate_fitness(sim_res, min_trades=25):
+    """
+    [실전형 퀀트 적합도 함수 (Fitness Function)]
+    1. 최소 거래수(Min Trades) 미달 시 가차없이 탈락 페널티
+    2. OOS 샤프 지수 중심 평가
+    3. MDD 과다 시 기하급수적 감점
+    4. WFO(Walk-Forward Optimization) 일관성 보너스 (IS vs OOS 비율)
+    5. 통계적 신뢰도(거래 표본수 35회 이상) 가산점
+    """
+    oos = sim_res['oos']
+    is_res = sim_res['is']
+    trades = oos.get('trades_count', 0)
+    
+    # 1. 최소 거래수 검증: 표본 부족에 의한 우연한 수익/과적합 완전 배제
+    if trades < min_trades:
+        return -100.0 - (min_trades - trades) * 3.0
+        
+    oos_sh = oos.get('sharpe', 0.0)
+    oos_ret = oos.get('return_pct', 0.0)
+    oos_mdd = abs(oos.get('mdd', 0.0))
+    win_rate = oos.get('win_rate', 0.0)
+    overfitting_ratio = sim_res.get('overfitting_ratio', 1.0)
+    
+    # 2. OOS 샤프 지수 기본 배점
+    score = oos_sh * 3.0
+    
+    # 3. 누적 수익률 기여
+    score += np.clip(oos_ret / 40.0, -3.0, 4.0)
+    
+    # 4. MDD 통제 페널티 (20% 초과 시 급격한 감점)
+    if oos_mdd > 20.0:
+        score -= (oos_mdd - 20.0) * 0.25
+    score -= oos_mdd * 0.05
+    
+    # 5. 승률 보너스 / 페널티
+    if win_rate >= 45.0:
+        score += (win_rate - 45.0) * 0.04
+    elif win_rate < 35.0:
+        score -= (35.0 - win_rate) * 0.06
+        
+    # 6. WFO 일반화 능력 검증 (IS 샤프와 OOS 샤프의 일관성)
+    if 0.5 <= overfitting_ratio <= 1.6:
+        score += 1.0
+    elif overfitting_ratio < 0.3:
+        score -= 2.0
+        
+    # 7. 풍부한 거래 표본수 가산점 (실전 신뢰도)
+    if trades >= 35:
+        score += min((trades - 35) * 0.02, 1.5)
+        
+    return score
+
+def _crossover_candidates(parent1, parent2):
+    """두 부모 유전자 균등 교차(Uniform Crossover)"""
+    child = {}
+    for k in parent1.keys():
+        child[k] = parent1[k] if random.random() < 0.5 else parent2[k]
+        
+    # 자식의 필터 활성화 수가 4개 이상으로 폭증하지 않도록 제약 (Filter Sparsity 유지)
+    active_filters = [f for f in FILTER_KEYS if child.get(f, False)]
+    if len(active_filters) > 3:
+        to_deactivate = random.sample(active_filters, k=len(active_filters) - 3)
+        for f in to_deactivate:
+            child[f] = False
+    elif len(active_filters) == 0:
+        child[random.choice(FILTER_KEYS)] = True
+        
+    return child
+
+def _mutate_candidate(candidate, mutation_rate=0.25):
+    """가우시안/이웃 유전자 돌연변이 (Mutation)"""
+    mutated = candidate.copy()
+    if random.random() < mutation_rate:
+        # 주요 파라미터 1~2개 미세 변이
+        keys_to_mutate = random.sample(list(GENE_OPTIONS.keys()), k=random.choice([1, 2]))
+        for k in keys_to_mutate:
+            options = GENE_OPTIONS[k]
+            curr_val = mutated[k]
+            if curr_val in options:
+                curr_idx = options.index(curr_val)
+                # 인접한 옵션으로 이동
+                step = random.choice([-1, 1])
+                new_idx = max(0, min(len(options) - 1, curr_idx + step))
+                mutated[k] = options[new_idx]
+            else:
+                mutated[k] = random.choice(options)
+                
+    if random.random() < 0.20:
+        # 필터 1개 토글
+        toggle_f = random.choice(FILTER_KEYS)
+        mutated[toggle_f] = not mutated[toggle_f]
+        
+    return mutated
+
 def _worker_simulate(task_args):
     """멀티프로세싱 워커 개별 실행 단위"""
-    df, cand = task_args
+    df, cand, min_trades = task_args
     sim_res = run_simulation(df, cand, split_ratio=0.70)
-    
-    oos_sh = sim_res['oos']['sharpe']
-    oos_mdd = abs(sim_res['oos']['mdd'])
-    ratio = sim_res['overfitting_ratio']
-    trades = sim_res['oos']['trades_count']
-    
-    score = oos_sh * 2.0 - (oos_mdd * 0.05) + (min(ratio, 2.0) * 0.5)
-    if trades < 20: score -= 2.0
+    score = _evaluate_fitness(sim_res, min_trades=min_trades)
     
     return {
         'score': score,
@@ -331,95 +483,113 @@ def _worker_simulate(task_args):
         'sim_res': sim_res
     }
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=20, num_workers=None, progress_callback=None):
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=150, min_trades=25, num_workers=None, progress_callback=None):
     """
-    [멀티코어 병렬 가속 엔진]
-    서버의 CPU 코어 수(num_workers)를 자동 감지하여 모든 코어에 병렬로 분산 연산 수행
+    [다세대 유전 진화 퀀트 탐색 엔진 (Genetic Evolutionary Algorithm)]
+    1세대: 전역 무작위 탐색 (다양한 필터 및 리스크 파라미터 조합)
+    2세대~N세대: 상위 엘리트 유전 교차(Crossover) 및 돌연변이(Mutation)로 실전 알파 집중 수렴
     """
     total_cores = os.cpu_count() or 1
     if num_workers is None or num_workers <= 0:
         num_workers = min(max(total_cores, 1), 16)
         
-    candidates = []
-    # SuperTrend, Squeeze, SMC, RSI, ADX, Volume MA 조합 다차원 탐색
-    for st_p in [5, 7, 10]:
-        for st_m in [2.0, 3.0]:
-            for use_sqz in [False, True]:
-                for use_smc in [False, True]:
-                    for use_rsi in [False, True]:
-                        for use_adx in [False, True]:
-                            for use_vol in [False, True]:
-                                candidates.append({
-                                    'st_period': st_p,
-                                    'st_mult': st_m,
-                                    'ema_len': 200,
-                                    'use_ema_filter': True,
-                                    'min_width_pct': 1.0,
-                                    'use_min_volat': True,
-                                    'use_squeeze': use_sqz,
-                                    'sqz_len': 20,
-                                    'bb_mult': 2.0,
-                                    'kc_mult': 1.5,
-                                    'use_smc': use_smc,
-                                    'smc_swing_len': 5,
-                                    'smc_mode': 'Structure',
-                                    'use_rsi': use_rsi,
-                                    'rsi_len': 14,
-                                    'rsi_mode': 'Boundary',
-                                    'rsi_ob': 70.0,
-                                    'rsi_os': 30.0,
-                                    'use_adx': use_adx,
-                                    'adx_len': 14,
-                                    'adx_threshold': 20.0,
-                                    'use_vol': use_vol,
-                                    'vol_ma_len': 20,
-                                    'vol_mult': 1.0,
-                                    'use_tr_exit': True,
-                                    'tr_ma_len': 100,
-                                    'tp_mode': 'ATR',
-                                    'sl_mode': 'ATR',
-                                    'tp_fixed_pct': 3.0,
-                                    'sl_fixed_pct': 2.0,
-                                    'tp_atr_mult': 3.5,
-                                    'sl_atr_mult': 2.0,
-                                    'use_time_exit': True,
-                                    'max_bars_hold': 72
-                                })
-                    
-    selected_candidates = candidates[:max_iterations]
-    eval_results = []
-    total_tasks = len(selected_candidates)
-    
     start_t = time.time()
     
-    if num_workers > 1:
-        tasks = [(df, c) for c in selected_candidates]
-        completed = 0
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            future_to_cand = {executor.submit(_worker_simulate, t): t for t in tasks}
-            for future in as_completed(future_to_cand):
-                res = future.result()
-                eval_results.append(res)
-                completed += 1
-                if progress_callback:
-                    pct = int(completed / total_tasks * 100)
-                    elapsed = time.time() - start_t
-                    progress_callback(pct, f"⚡ [{num_workers}개 CPU 코어 풀가동] 진화 세대 {completed}/{total_tasks} 병렬 연산 중 ({elapsed:.1f}초)")
+    # 세대 수 및 세대별 개체 수 산정
+    if max_iterations <= 60:
+        n_generations = 2
+    elif max_iterations <= 180:
+        n_generations = 3
     else:
-        for idx, cand in enumerate(selected_candidates):
-            res = _worker_simulate((df, cand))
-            eval_results.append(res)
-            if progress_callback:
-                pct = int((idx + 1) / total_tasks * 100)
-                progress_callback(pct, f"진화 세대 {idx+1}/{total_tasks} 검증 중...")
-
-    elapsed_time = round(time.time() - start_t, 2)
+        n_generations = 4
+        
+    pop_size = max(max_iterations // n_generations, 20)
+    actual_total = pop_size * n_generations
     
-    # 최고 성과 모델 선별
-    eval_results.sort(key=lambda x: x['score'], reverse=True)
-    best = eval_results[0]
+    all_evaluated = []
+    current_population = [_sample_random_candidate() for _ in range(pop_size)]
+    global_best = None
+    
+    total_completed = 0
+    
+    for gen in range(1, n_generations + 1):
+        gen_start_t = time.time()
+        tasks = [(df, cand, min_trades) for cand in current_population]
+        gen_results = []
+        
+        if num_workers > 1:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(_worker_simulate, t): t for t in tasks}
+                for f in as_completed(futures):
+                    res = f.result()
+                    gen_results.append(res)
+                    total_completed += 1
+                    
+                    if progress_callback:
+                        pct = int((total_completed / actual_total) * 100)
+                        pct = min(pct, 99)
+                        best_so_far_sh = global_best['sim_res']['oos']['sharpe'] if global_best else res['sim_res']['oos']['sharpe']
+                        best_trades = global_best['sim_res']['oos']['trades_count'] if global_best else res['sim_res']['oos']['trades_count']
+                        progress_callback(
+                            pct,
+                            f"[AI 유전 진화 {gen}/{n_generations}세대] {total_completed}/{actual_total} 검증 중 "
+                            f"(최고 OOS 샤프: {best_so_far_sh:.2f}, 거래: {best_trades}회 | {num_workers}코어 풀가동)"
+                        )
+        else:
+            for cand in current_population:
+                res = _worker_simulate((df, cand, min_trades))
+                gen_results.append(res)
+                total_completed += 1
+                if progress_callback:
+                    pct = int((total_completed / actual_total) * 100)
+                    pct = min(pct, 99)
+                    progress_callback(pct, f"[AI 유전 진화 {gen}/{n_generations}세대] {total_completed}/{actual_total} 검증 중...")
+                    
+        # 세대 결과 정렬
+        gen_results.sort(key=lambda x: x['score'], reverse=True)
+        all_evaluated.extend(gen_results)
+        
+        # 글로벌 최고 갱신
+        if global_best is None or gen_results[0]['score'] > global_best['score']:
+            global_best = gen_results[0]
+            
+        # 마지막 세대가 아니면 다음 세대 육성 (Elitism + Crossover + Mutation)
+        if gen < n_generations:
+            # 엘리트 풀 (상위 25%)
+            elite_count = max(int(pop_size * 0.25), 3)
+            elites = [x['params'] for x in gen_results[:elite_count]]
+            
+            next_pop = []
+            # 최상위 10% 무조건 보존 (Elitism)
+            keep_count = max(int(pop_size * 0.10), 2)
+            next_pop.extend(elites[:keep_count])
+            
+            # 교차 및 돌연변이로 나머지 채우기
+            while len(next_pop) < pop_size:
+                r = random.random()
+                if r < 0.65:
+                    # 상위 엘리트 간 교차
+                    p1, p2 = random.sample(elites, 2)
+                    child = _crossover_candidates(p1, p2)
+                    child = _mutate_candidate(child, mutation_rate=0.20)
+                    next_pop.append(child)
+                elif r < 0.85:
+                    # 엘리트 단독 변이
+                    p = random.choice(elites)
+                    mut = _mutate_candidate(p, mutation_rate=0.35)
+                    next_pop.append(mut)
+                else:
+                    # 국소 최적화 탈출용 신규 무작위 개체 (Diversity)
+                    next_pop.append(_sample_random_candidate())
+                    
+            current_population = next_pop[:pop_size]
+
+    # 전체 세대 중 최종 최고 모델 선정
+    all_evaluated.sort(key=lambda x: x['score'], reverse=True)
+    best = all_evaluated[0]
     best_params = best['params']
     best_sim = best['sim_res']
+    elapsed_time = round(time.time() - start_t, 2)
     
     summary = {
         'symbol': symbol,
@@ -428,14 +598,16 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         'oos_return': best_sim['oos']['return_pct'],
         'oos_mdd': best_sim['oos']['mdd'],
         'oos_win_rate': best_sim['oos']['win_rate'],
+        'oos_trades': best_sim['oos']['trades_count'],
         'is_sharpe': best_sim['is']['sharpe'],
         'overfitting_ratio': best_sim['overfitting_ratio'],
         'workers_used': num_workers,
+        'generations': n_generations,
         'elapsed_time_sec': elapsed_time
     }
     
     clean_sym = symbol.replace("/", "")
-    strategy_name = f"AI Auto-Evolved {clean_sym} {timeframe} Strategy v6"
+    strategy_name = f"AI Deep-Evolved {clean_sym} {timeframe} Strategy v6"
     generated_pine = generate_pine_script_v6(strategy_name, best_params, summary)
     
     return {
@@ -443,7 +615,8 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         'best_sim': best_sim,
         'summary': summary,
         'pine_code': generated_pine,
-        'total_evaluated': total_tasks,
+        'total_evaluated': total_completed,
         'workers_used': num_workers,
+        'generations': n_generations,
         'elapsed_time_sec': elapsed_time
     }

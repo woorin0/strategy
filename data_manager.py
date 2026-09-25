@@ -15,11 +15,26 @@ def get_timeframe_ms(timeframe):
     if unit == 'd': return num * 24 * 60 * 60 * 1000
     return 60 * 60 * 1000
 
+def normalize_symbol(symbol):
+    """심볼 문자열 정규화 (예: btc -> BTC/USDT, xrpusdt -> XRP/USDT)"""
+    s = symbol.strip().upper()
+    if "/" not in s:
+        if s.endswith("USDT"):
+            s = s[:-4] + "/USDT"
+        elif s.endswith("BUSD"):
+            s = s[:-4] + "/BUSD"
+        elif s.endswith("BTC"):
+            s = s[:-3] + "/BTC"
+        else:
+            s = s + "/USDT"
+    return s
+
 def get_cached_data(symbol="BTC/USDT", timeframe="1h", start_date="2023-06-01", padding_candles=250):
-    """지표 Warm-up 패딩 및 Parquet 캐싱을 지원하는 데이터 로더"""
+    """지표 Warm-up 패딩 및 Parquet 캐싱을 지원하는 전천후 데이터 로더"""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
         
+    symbol = normalize_symbol(symbol)
     clean_sym = symbol.replace("/", "_")
     key = f"binance_{clean_sym}_{timeframe}_{start_date}_p{padding_candles}"
     hash_key = hashlib.md5(key.encode()).hexdigest()
@@ -29,7 +44,7 @@ def get_cached_data(symbol="BTC/USDT", timeframe="1h", start_date="2023-06-01", 
     if os.path.exists(cache_path):
         return pd.read_parquet(cache_path)
         
-    # 2. 로컬에 기존 수집된 parquet 파일이 있는지 확인 (Fallback)
+    # 2. 로컬 기본 파일 (2023년 이후인 경우에만 우선 매핑)
     local_map = {
         ("BTC/USDT", "1h"): "data_btc_1h.parquet",
         ("BTC/USDT", "15m"): "data_btc_15m.parquet",
@@ -37,12 +52,12 @@ def get_cached_data(symbol="BTC/USDT", timeframe="1h", start_date="2023-06-01", 
         ("SOL/USDT", "1h"): "data_sol_1h.parquet"
     }
     
-    if (symbol, timeframe) in local_map and os.path.exists(local_map[(symbol, timeframe)]):
+    if start_date >= "2023-06-01" and (symbol, timeframe) in local_map and os.path.exists(local_map[(symbol, timeframe)]):
         df = pd.read_parquet(local_map[(symbol, timeframe)])
         df.to_parquet(cache_path)
         return df
 
-    # 3. 없으면 Binance CCXT를 통해 자동 수집
+    # 3. 없거나 2023년 이전 장기 데이터인 경우 Binance CCXT를 통해 자동 수집
     exchange = ccxt.binance({'enableRateLimit': True, 'timeout': 30000})
     tf_ms = get_timeframe_ms(timeframe)
     base_since = int(pd.to_datetime(start_date).timestamp() * 1000)
