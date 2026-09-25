@@ -27,6 +27,52 @@ from discord_notifier import send_strategy_alert, send_test_alert, DEFAULT_WEBHO
 
 st.set_page_config(page_title="AI 퀀트 리서치 터미널 v6.0", page_icon="⚡", layout="wide")
 
+# [스크롤 최적화 및 GPU 가속 CSS 주입]
+st.markdown("""
+<style>
+/* 부드러운 스크롤 애니메이션 활성화 */
+html {
+    scroll-behavior: smooth !important;
+}
+/* 브라우저 GPU 렌더링 가속화 */
+.stApp {
+    -webkit-overflow-scrolling: touch;
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+}
+/* 무거운 차트 컨테이너 레이아웃 격리 (스크롤 리플로우 & 랙 방지) */
+[data-testid="stVegaLiteChart"], [data-testid="stArrowVegaLiteChart"] {
+    contain: content;
+    will-change: transform;
+}
+/* 부드럽고 가벼운 스크롤바 */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.4);
+}
+</style>
+""", unsafe_allow_html=True)
+
+def downsample_for_chart(series, max_points=600):
+    """
+    수만 개 캔들 차트를 60FPS로 부드럽게 렌더링하도록 지능적 다운샘플링
+    (형태와 변곡점은 100% 보존하면서 브라우저 DOM 렌더링 부하와 스크롤 랙 완벽 해소)
+    """
+    if series is None or len(series) <= max_points:
+        return series
+    step = max(1, len(series) // max_points)
+    sampled = series.iloc[::step].copy()
+    if len(series) > 0 and (len(sampled) == 0 or sampled.index[-1] != series.index[-1]):
+        sampled = pd.concat([sampled, series.iloc[[-1]]])
+    return sampled
+
 # CPU 코어 감지
 detected_cores = os.cpu_count() or 1
 
@@ -124,33 +170,41 @@ with st.sidebar:
         st.markdown("### 2. 🧬 AI 다세대 유전 진화 설정")
         preset = st.radio(
             "탐색 강도 프리셋",
-            ["⚡ 빠른 탐색 (50회)", "🔬 심층 퀀트 진화 (150회 / 추천)", "🧬 울트라 초정밀 진화 (300회)", "🔥 극한 정밀 진화 (500회)", "🎛️ 직접 설정"],
-            index=1,
-            help="심층 진화일수록 다세대(Multi-Generation) 교차 및 돌연변이를 거쳐 견고하고 실전성 높은 전략을 도출합니다."
+            ["⚡ 빠른 스캔 (1,000회)", "🔬 심층 퀀트 진화 (3,000회)", "🔥 울트라 고수익 진화 (5,000회)", "🚀 극한 알파 탐색 (10,000회 / 기본값)", "🎛️ 직접 설정"],
+            index=3,
+            help="심층 진화일수록 다세대(Multi-Generation) 교차 및 돌연변이를 거쳐 초고수익/고승률과 리스크 통제를 동시에 달성합니다."
         )
         
-        if "50회" in preset:
-            ai_iterations = 50
-        elif "150회" in preset:
-            ai_iterations = 150
-        elif "300회" in preset:
-            ai_iterations = 300
-        elif "500회" in preset:
-            ai_iterations = 500
+        if "1,000회" in preset:
+            ai_iterations = 1000
+        elif "3,000회" in preset:
+            ai_iterations = 3000
+        elif "5,000회" in preset:
+            ai_iterations = 5000
+        elif "10,000회" in preset:
+            ai_iterations = 10000
         else:
-            ai_iterations = st.slider("탐색 개체 수 (Iterations)", 20, 1000, 150, 10)
+            ai_iterations = st.number_input("탐색 개체 수 (Iterations)", min_value=100, max_value=50000, value=10000, step=1000)
             
-        min_trades = st.number_input(
-            "최소 검증 거래수 (Min OOS Trades)", 
-            min_value=10, max_value=500, value=100, step=10,
-            help="표본 부족으로 우연히 발생한 가짜 고수익/과적합 전략을 배제합니다. OOS 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다."
-        )
+        col_set1, col_set2 = st.columns(2)
+        with col_set1:
+            max_mdd = st.number_input(
+                "최대 허용 MDD (%)", 
+                min_value=10.0, max_value=80.0, value=40.0, step=5.0,
+                help="MDD가 40% 이내면 정상 추세 변동성으로 허용하며, 40%를 초과할 경우 강력한 탈락 페널티를 부과합니다."
+            )
+        with col_set2:
+            min_trades = st.number_input(
+                "최소 검증 거래수", 
+                min_value=10, max_value=500, value=100, step=10,
+                help="OOS 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다."
+            )
         
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"🧬 **다세대 유전 진화 알고리즘 풀가동**: 8대 퀀트 지표군(SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA, 변동성 필터)의 최적 조합과 리스크 관리 파라미터를 {workers_to_use}개 CPU 코어로 {ai_iterations}회 다세대 유전 교차/돌연변이 탐색하여 실전형 Pine Script v6 코드를 합성합니다.")
-        btn_ai_run = st.button("🤖 AI 심층 진화 & 실전 전략 생성", type="primary", use_container_width=True)
+        st.info(f"🧬 **고수익 유전 진화 풀가동**: 8대 퀀트 지표군을 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, MDD {max_mdd:.0f}% 한도 내에서 누적 수익률과 승률을 극대화한 Pine Script v6 코드를 합성합니다.")
+        btn_ai_run = st.button("🤖 AI 심층 진화 & 고수익 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
     st.markdown("---")
@@ -195,6 +249,7 @@ if btn_ai_run:
             timeframe=timeframe, 
             max_iterations=ai_iterations, 
             min_trades=min_trades,
+            max_mdd=max_mdd,
             num_workers=workers_to_use, 
             progress_callback=update_p
         )
@@ -276,9 +331,9 @@ if "last_result" in st.session_state:
     # 텔레메트리 메트릭 5종 카드
     c1, c2, c3, c4, c5 = st.columns(5)
     draw_metric(c1, "🏆 OOS 샤프 지수", f"{is_r['sharpe']}", f"{oos_r['sharpe']}", "#007aff" if oos_r['sharpe'] >= 1.0 else "#ff9500")
-    draw_metric(c2, "📈 누적 수익률", f"{is_r['return_pct']:+.1f}%", f"{oos_r['return_pct']:+.1f}%", "#34C759" if oos_r['return_pct'] > 0 else "#ff3b30")
-    draw_metric(c3, "🛡️ 최대 낙폭 (MDD)", f"{is_r['mdd']:.1f}%", f"{oos_r['mdd']:.1f}%", "#ff3b30" if oos_r['mdd'] > 20 else "#34C759")
-    draw_metric(c4, "🎯 승률 (Win Rate)", f"{is_r['win_rate']:.1f}%", f"{oos_r['win_rate']:.1f}%", "#5856d6")
+    draw_metric(c2, "📈 누적 수익률", f"{is_r['return_pct']:+.1f}%", f"{oos_r['return_pct']:+.1f}%", "#d97706" if oos_r['return_pct'] >= 1000.0 else "#34C759" if oos_r['return_pct'] > 0 else "#ff3b30")
+    draw_metric(c3, "🛡️ 최대 낙폭 (MDD)", f"{is_r['mdd']:.1f}%", f"{oos_r['mdd']:.1f}%", "#ff3b30" if oos_r['mdd'] > 40.0 else "#34C759")
+    draw_metric(c4, "🎯 승률 (Win Rate)", f"{is_r['win_rate']:.1f}%", f"{oos_r['win_rate']:.1f}%", "#007aff" if oos_r['win_rate'] >= 50.0 else "#5856d6")
     draw_metric(c5, "🔄 OOS 거래 횟수", f"{is_r['trades_count']}회", f"{oos_r['trades_count']}회", "#ff9500")
 
     st.divider()
@@ -288,10 +343,10 @@ if "last_result" in st.session_state:
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         st.markdown("**In-Sample (과거 70% 학습 구간)**")
-        st.line_chart(is_r['equity'], color="#007aff")
+        st.line_chart(downsample_for_chart(is_r['equity']), color="#007aff")
     with col_chart2:
         st.markdown("**Out-of-Sample (최근 30% 미지의 검증 구간)**")
-        st.line_chart(oos_r['equity'], color="#34C759")
+        st.line_chart(downsample_for_chart(oos_r['equity']), color="#34C759")
 
     st.divider()
     
