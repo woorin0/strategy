@@ -8,6 +8,7 @@ from data_manager import get_cached_data
 from quant_engine import run_simulation
 from report_exporter import export_backtest_to_excel
 from ai_generator import run_ai_evolution_search, generate_pine_script_v6
+from discord_notifier import send_strategy_alert, send_test_alert, DEFAULT_WEBHOOK_URL
 
 st.set_page_config(page_title="AI 퀀트 리서치 터미널 v6.0", page_icon="⚡", layout="wide")
 
@@ -99,6 +100,16 @@ with st.sidebar:
         btn_ai_run = st.button("🤖 AI 자율 분석 및 전략 코드 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
+    st.markdown("---")
+    with st.expander("🔔 Discord 웹훅 알림 설정", expanded=False):
+        use_discord = st.checkbox("전략 코드 완성 시 Discord 알림", value=True)
+        webhook_url = st.text_input("Discord Webhook URL", value=DEFAULT_WEBHOOK_URL)
+        if st.button("🔔 디스코드 연결 테스트", use_container_width=True):
+            if send_test_alert(webhook_url):
+                st.success("✅ 디스코드 알림 전송 성공!")
+            else:
+                st.error("❌ 전송 실패! 웹훅 URL을 확인해 주세요.")
+
 # ----------------- [메인 대시보드] -----------------
 st.title("⚡ AI QUANTUM RESEARCH TERMINAL v6.0")
 st.caption(f"선택 심볼: **{symbol}** | 주기: **{timeframe}** | 감지된 서버 코어: **{detected_cores} Cores**")
@@ -127,6 +138,19 @@ if btn_ai_run:
     prog_bar.empty()
     st.balloons()
     st.success(f"🏆 AI 에이전트가 SMC & Squeeze 지표를 결합하여 {ai_res['workers_used']}개 코어로 {ai_res['total_evaluated']}세대를 **{ai_res['elapsed_time_sec']}초 만에 병렬 완파**하고 최적의 Pine Script v6 코드를 합성했습니다!")
+    
+    if use_discord:
+        send_strategy_alert(
+            webhook_url=webhook_url,
+            mode_name="🤖 AI 자율 진화",
+            symbol=symbol,
+            timeframe=timeframe,
+            oos_metrics=ai_res['best_sim']['oos'],
+            is_metrics=ai_res['best_sim']['is'],
+            params=ai_res['best_params'],
+            elapsed_sec=ai_res['elapsed_time_sec']
+        )
+        st.toast("🔔 디스코드로 최적 전략 생성 알림이 전송되었습니다!")
 
 # ----------------- [수동 백테스트 모드 로직] -----------------
 if btn_manual_run:
@@ -155,6 +179,18 @@ if btn_manual_run:
             'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate']
         }
         st.session_state["generated_code"] = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
+        
+        if use_discord:
+            send_strategy_alert(
+                webhook_url=webhook_url,
+                mode_name="🛠️ 수동 백테스트",
+                symbol=symbol,
+                timeframe=timeframe,
+                oos_metrics=res['oos'],
+                is_metrics=res['is'],
+                params=params
+            )
+            st.toast("🔔 디스코드로 전략 생성 알림이 전송되었습니다!")
 
 # ----------------- [결과 렌더링 섹션] -----------------
 if "last_result" in st.session_state:

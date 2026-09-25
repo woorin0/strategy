@@ -56,6 +56,24 @@ sudo systemctl restart quant_terminal
 # 서버 공인 IP 감지
 SERVER_IP=$(curl -s https://ifconfig.me || curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
 
+# 디스코드 웹훅 배포 완료 알림 전송
+DISCORD_WEBHOOK="https://discord.com/api/webhooks/1553035812503949382/rnzUhOTIr8Pj0b0mL8NUr2eVn5wb6wRtnEWzYrYykH6sWkhjwOH-8C7_rpgUNctAX0hx"
+echo "🔔 디스코드 배포 완료 알림 전송 중..."
+curl -s -H "Content-Type: application/json" -X POST -d '{
+  "embeds": [{
+    "title": "🚀 Vultr 서버 배포 및 앱 설치 완료!",
+    "description": "AI 퀀트 리서치 터미널 v6.0이 Vultr 서버에 성공적으로 배포 및 기동되었습니다.",
+    "color": 3066993,
+    "fields": [
+      {"name": "🌐 웹 접속 URL", "value": "http://'"$SERVER_IP"':8501", "inline": false},
+      {"name": "🖥️ 서버 IP", "value": "'"$SERVER_IP"'", "inline": true},
+      {"name": "⚡ 백그라운드 서비스", "value": "Active (running)", "inline": true},
+      {"name": "🛡️ 탑재 지표", "value": "SuperTrend, Squeeze, SMC, RSI, ADX, Volume MA", "inline": false}
+    ],
+    "footer": {"text": "AI Quantum Research Terminal v6.0"}
+  }]
+}' "$DISCORD_WEBHOOK" || true
+
 echo ""
 echo "=========================================================="
 echo "🎉 배포가 완벽하게 완료되었습니다!"
