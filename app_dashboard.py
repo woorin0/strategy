@@ -1,5 +1,6 @@
 import os
 import glob
+import time
 import datetime
 import pandas as pd
 import numpy as np
@@ -22,8 +23,15 @@ import streamlit as st
 from data_manager import get_cached_data
 from quant_engine import run_simulation
 from report_exporter import export_backtest_to_excel
-from ai_generator import run_ai_evolution_search, generate_pine_script_v6
+from ai_generator import generate_pine_script_v6
 from discord_notifier import send_strategy_alert, send_test_alert, DEFAULT_WEBHOOK_URL
+from evolution_manager import (
+    get_job_status,
+    get_latest_strategy,
+    list_strategy_history,
+    load_strategy_history,
+    start_background_evolution
+)
 
 st.set_page_config(page_title="AI 퀀트 리서치 터미널 v6.0", page_icon="⚡", layout="wide")
 
@@ -203,13 +211,13 @@ with st.sidebar:
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"🧬 **고수익 유전 진화 풀가동**: 8대 퀀트 지표군을 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, MDD {max_mdd:.0f}% 한도 내에서 누적 수익률과 승률을 극대화한 Pine Script v6 코드를 합성합니다.")
+        st.info(f"🧬 **고수익 유전 진화 풀가동**: 8대 퀀트 지표군을 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, MDD {max_mdd:.0f}% 한도 내에서 승률 50%+ & 1,000%+ 수익률을 지향하는 Pine Script v6 코드를 합성합니다.")
         btn_ai_run = st.button("🤖 AI 심층 진화 & 고수익 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
     st.markdown("---")
     with st.expander("🔔 Discord 웹훅 알림 설정", expanded=False):
-        use_discord = st.checkbox("전략 코드 완성 시 Discord 알림", value=True)
+        use_discord = st.checkbox("진행 상황(25%, 50%, 75%, 완성) 웹훅 알림", value=True)
         webhook_url = st.text_input("Discord Webhook URL", value=DEFAULT_WEBHOOK_URL)
         if st.button("🔔 디스코드 연결 테스트", use_container_width=True):
             if send_test_alert(webhook_url):
@@ -217,7 +225,7 @@ with st.sidebar:
             else:
                 st.error("❌ 전송 실패! 웹훅 URL을 확인해 주세요.")
 
-# ----------------- [메인 대시보드] -----------------
+# ----------------- [메인 대시보드 상단] -----------------
 st.title("⚡ AI QUANTUM RESEARCH TERMINAL v6.0")
 st.caption(f"선택 심볼: **{symbol}** | 주기: **{timeframe}** | 감지된 서버 코어: **{detected_cores} Cores**")
 
@@ -230,59 +238,72 @@ def draw_metric(col, label, val_is, val_oos, color="#34C759"):
     </div>
     """, unsafe_allow_html=True)
 
-# ----------------- [AI 에이전트 자율 생성 모드 로직] -----------------
+# ----------------- [1. 백그라운드 작업 상태 모니터링 & 자동 복원] -----------------
+current_job = get_job_status()
+is_job_running = current_job.get("status") == "RUNNING"
+
+if is_job_running:
+    pct = current_job.get("progress_pct", 0)
+    g_curr = current_job.get("generation", 1)
+    g_tot = current_job.get("total_generations", 5)
+    b_ret = current_job.get("best_return", 0.0)
+    b_wr = current_job.get("best_win_rate", 0.0)
+    b_mdd = current_job.get("best_mdd", 0.0)
+    b_tr = current_job.get("best_trades", 0)
+    elap = int(current_job.get("elapsed_sec", 0))
+    elap_str = f"{elap // 60}분 {elap % 60}초" if elap >= 60 else f"{elap}초"
+    
+    st.info(f"""
+    ### 🧬 AI 다세대 유전 진화 백그라운드 가동 중 (무중단 모드)
+    - **대상 종목**: `{current_job.get('symbol', symbol)}` ({current_job.get('timeframe', timeframe)}) | **탐색 규모**: {current_job.get('max_iterations', 10000):,}회
+    - **현재 진행률**: **{pct}%** (제 {g_curr}/{g_tot} 세대 진화 중) | **경과 시간**: {elap_str}
+    - 💰 **현재 최고 수익률**: **{b_ret:+.1f}%** | 🎯 **승률**: **{b_wr:.1f}%** ({b_tr}회 거래) | 🛡️ **MDD**: **{b_mdd:.1f}%**
+    
+    > 🛡️ **무중단 안내**: 브라우저 창을 닫으시거나 자리를 비우셔도 서버 백그라운드에서 **10,000회 끝까지 끊김 없이 계속 연산**됩니다.  
+    > **25%, 50%, 75%, 100%** 달성 시마다 디스코드로 리포트가 자동 전송되며, 완료 후 언제 접속하셔도 완성된 전략 코드가 화면에 즉시 복원됩니다.
+    """)
+    st.progress(pct / 100.0)
+    time.sleep(2)
+    st.rerun()
+
+# ----------------- [2. AI 자율 생성 버튼 핸들러 (백그라운드 시작)] -----------------
 if btn_ai_run:
-    prog_bar = st.progress(0, text=f"'{symbol}' ({timeframe}) {start_year}년~현재 데이터 수집 및 지표 환경 구성 중...")
-    try:
-        df = get_cached_data(symbol, timeframe, start_date=start_date)
-    except Exception as e:
-        st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. 심볼명을 확인해 주세요. (에러: {e})")
-        df = None
+    if is_job_running:
+        st.warning("⚠️ 이미 백그라운드에서 유전 진화 탐색이 실행 중입니다. 완료 후 새로운 작업을 시작해 주세요.")
+    else:
+        with st.spinner(f"'{symbol}' ({timeframe}) {start_year}년~현재 데이터 수집 및 백그라운드 워커 기동 중..."):
+            try:
+                df = get_cached_data(symbol, timeframe, start_date=start_date)
+            except Exception as e:
+                st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. ({e})")
+                df = None
+                
+            if df is not None:
+                success, msg = start_background_evolution(
+                    df=df,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    max_iterations=ai_iterations,
+                    min_trades=min_trades,
+                    max_mdd=max_mdd,
+                    num_workers=workers_to_use,
+                    webhook_url=webhook_url if use_discord else None,
+                    use_discord=use_discord
+                )
+                if success:
+                    st.success("🚀 백그라운드 유전 진화가 시작되었습니다! 브라우저 창을 닫으셔도 계속 실행됩니다.")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning(msg)
 
-    if df is not None:
-        def update_p(val, txt):
-            prog_bar.progress(val, text=txt)
-            
-        ai_res = run_ai_evolution_search(
-            df, 
-            symbol=symbol, 
-            timeframe=timeframe, 
-            max_iterations=ai_iterations, 
-            min_trades=min_trades,
-            max_mdd=max_mdd,
-            num_workers=workers_to_use, 
-            progress_callback=update_p
-        )
-        st.session_state["ai_result"] = ai_res
-        st.session_state["last_result"] = ai_res["best_sim"]
-        st.session_state["generated_code"] = ai_res["pine_code"]
-        prog_bar.empty()
-        st.balloons()
-        st.success(
-            f"🏆 AI 다세대 유전 진화 완료! ({ai_res['workers_used']}개 CPU 코어로 {ai_res.get('generations', 3)}세대 총 {ai_res['total_evaluated']}개 후보 심층 교차/돌연변이 탐색, "
-            f"소요 시간: **{ai_res['elapsed_time_sec']}초**, 로드된 캔들: {len(df):,}개)"
-        )
-        
-        if use_discord:
-            send_strategy_alert(
-                webhook_url=webhook_url,
-                mode_name="🤖 AI 자율 진화",
-                symbol=symbol,
-                timeframe=timeframe,
-                oos_metrics=ai_res['best_sim']['oos'],
-                is_metrics=ai_res['best_sim']['is'],
-                params=ai_res['best_params'],
-                elapsed_sec=ai_res['elapsed_time_sec']
-            )
-            st.toast("🔔 디스코드로 최적 전략 생성 알림이 전송되었습니다!")
-
-# ----------------- [수동 백테스트 모드 로직] -----------------
+# ----------------- [3. 수동 백테스트 모드 핸들러] -----------------
 if btn_manual_run:
     with st.spinner(f"⏳ '{symbol}' ({timeframe}) {start_year}년~현재 시계열 데이터 로드 및 백테스트 연산 중..."):
         try:
             df = get_cached_data(symbol, timeframe, start_date=start_date)
         except Exception as e:
-            st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. 심볼명을 확인해 주세요. (에러: {e})")
+            st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. ({e})")
             df = None
 
         if df is not None:
@@ -302,15 +323,31 @@ if btn_manual_run:
                 'use_time_exit': use_time_exit, 'max_bars_hold': max_bars_hold
             }
             res = run_simulation(df, params, split_ratio=0.70)
-            st.session_state["last_result"] = res
             summary = {
                 'symbol': symbol, 'timeframe': timeframe,
                 'oos_sharpe': res['oos']['sharpe'], 'oos_return': res['oos']['return_pct'],
-                'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate']
+                'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate'],
+                'oos_trades': res['oos']['trades_count']
             }
-            st.session_state["generated_code"] = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
+            pine_code = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
             
-            if use_discord:
+            # 수동 결과 세션 저장
+            st.session_state["active_strategy"] = {
+                "symbol": symbol, "timeframe": timeframe,
+                "oos_sharpe": res['oos']['sharpe'], "oos_return": res['oos']['return_pct'],
+                "oos_mdd": res['oos']['mdd'], "oos_win_rate": res['oos']['win_rate'],
+                "oos_trades": res['oos']['trades_count'],
+                "is_sharpe": res['is']['sharpe'], "is_return": res['is']['return_pct'],
+                "is_mdd": res['is']['mdd'], "is_win_rate": res['is']['win_rate'],
+                "is_trades": res['is']['trades_count'],
+                "best_params": params,
+                "pine_code": pine_code,
+                "is_equity": res['is']['equity'],
+                "oos_equity": res['oos']['equity'],
+                "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            if use_discord and webhook_url:
                 send_strategy_alert(
                     webhook_url=webhook_url,
                     mode_name="🛠️ 수동 백테스트",
@@ -322,59 +359,114 @@ if btn_manual_run:
                 )
                 st.toast("🔔 디스코드로 전략 생성 알림이 전송되었습니다!")
 
-# ----------------- [결과 렌더링 섹션] -----------------
-if "last_result" in st.session_state:
-    res = st.session_state["last_result"]
-    is_r = res['is']
-    oos_r = res['oos']
-    
+# ----------------- [4. 전략 결과 자동 복원 및 렌더링] -----------------
+# 세션에 활성 전략이 없으면 디스크에서 최신 완료 전략 자동 로드
+active_strat = st.session_state.get("active_strategy")
+if active_strat is None and not is_job_running:
+    latest_saved = get_latest_strategy()
+    if latest_saved:
+        active_strat = latest_saved
+        st.session_state["active_strategy"] = active_strat
+        st.success(
+            f"💾 **최근 완료된 전략 자동 복원됨**: [{active_strat['symbol']} {active_strat['timeframe']}] "
+            f"생성 일시: {active_strat.get('created_at', '최근')} | OOS 수익률: **{active_strat.get('oos_return', 0.0):+.1f}%** | "
+            f"승률: **{active_strat.get('oos_win_rate', 0.0):.1f}%** | MDD: **{active_strat.get('oos_mdd', 0.0):.1f}%**  \n"
+            f"(오래 켜두어 화면이 새로고침되거나 브라우저를 다시 열어도 결과가 안전하게 보존됩니다.)"
+        )
+
+if active_strat is not None and not is_job_running:
     # 텔레메트리 메트릭 5종 카드
     c1, c2, c3, c4, c5 = st.columns(5)
-    draw_metric(c1, "🏆 OOS 샤프 지수", f"{is_r['sharpe']}", f"{oos_r['sharpe']}", "#007aff" if oos_r['sharpe'] >= 1.0 else "#ff9500")
-    draw_metric(c2, "📈 누적 수익률", f"{is_r['return_pct']:+.1f}%", f"{oos_r['return_pct']:+.1f}%", "#d97706" if oos_r['return_pct'] >= 1000.0 else "#34C759" if oos_r['return_pct'] > 0 else "#ff3b30")
-    draw_metric(c3, "🛡️ 최대 낙폭 (MDD)", f"{is_r['mdd']:.1f}%", f"{oos_r['mdd']:.1f}%", "#ff3b30" if oos_r['mdd'] > 40.0 else "#34C759")
-    draw_metric(c4, "🎯 승률 (Win Rate)", f"{is_r['win_rate']:.1f}%", f"{oos_r['win_rate']:.1f}%", "#007aff" if oos_r['win_rate'] >= 50.0 else "#5856d6")
-    draw_metric(c5, "🔄 OOS 거래 횟수", f"{is_r['trades_count']}회", f"{oos_r['trades_count']}회", "#ff9500")
+    sh_oos = active_strat.get('oos_sharpe', 0.0)
+    sh_is = active_strat.get('is_sharpe', 0.0)
+    ret_oos = active_strat.get('oos_return', 0.0)
+    ret_is = active_strat.get('is_return', 0.0)
+    mdd_oos = active_strat.get('oos_mdd', 0.0)
+    mdd_is = active_strat.get('is_mdd', 0.0)
+    wr_oos = active_strat.get('oos_win_rate', 0.0)
+    wr_is = active_strat.get('is_win_rate', 0.0)
+    tr_oos = active_strat.get('oos_trades', 0)
+    tr_is = active_strat.get('is_trades', 0)
+
+    draw_metric(c1, "🏆 OOS 샤프 지수", f"{sh_is:.2f}", f"{sh_oos:.2f}", "#007aff" if sh_oos >= 1.0 else "#ff9500")
+    draw_metric(c2, "📈 누적 수익률", f"{ret_is:+.1f}%", f"{ret_oos:+.1f}%", "#d97706" if ret_oos >= 1000.0 else "#34C759" if ret_oos > 0 else "#ff3b30")
+    draw_metric(c3, "🛡️ 최대 낙폭 (MDD)", f"{mdd_is:.1f}%", f"{mdd_oos:.1f}%", "#ff3b30" if abs(mdd_oos) > 40.0 else "#34C759")
+    draw_metric(c4, "🎯 승률 (Win Rate)", f"{wr_is:.1f}%", f"{wr_oos:.1f}%", "#007aff" if wr_oos >= 50.0 else "#5856d6")
+    draw_metric(c5, "🔄 OOS 거래 횟수", f"{tr_is}회", f"{tr_oos}회", "#ff9500")
 
     st.divider()
     
     # 에쿼티 커브 차트
-    st.subheader("📊 누적 자산 성장 곡선 (Equity Curve: IS vs OOS)")
+    st.subheader(f"📊 누적 자산 성장 곡선 (Equity Curve: {active_strat['symbol']} {active_strat['timeframe']})")
+    
+    # equity 데이터 시리즈 복원
+    is_eq_raw = active_strat.get('is_equity', {})
+    oos_eq_raw = active_strat.get('oos_equity', {})
+    
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         st.markdown("**In-Sample (과거 70% 학습 구간)**")
-        st.line_chart(downsample_for_chart(is_r['equity']), color="#007aff")
+        if isinstance(is_eq_raw, pd.Series):
+            st.line_chart(downsample_for_chart(is_eq_raw), color="#007aff")
+        elif isinstance(is_eq_raw, dict) and len(is_eq_raw) > 0:
+            st.line_chart(pd.Series(is_eq_raw), color="#007aff")
+        else:
+            st.caption("에쿼티 데이터 없음")
+            
     with col_chart2:
         st.markdown("**Out-of-Sample (최근 30% 미지의 검증 구간)**")
-        st.line_chart(downsample_for_chart(oos_r['equity']), color="#34C759")
+        if isinstance(oos_eq_raw, pd.Series):
+            st.line_chart(downsample_for_chart(oos_eq_raw), color="#34C759")
+        elif isinstance(oos_eq_raw, dict) and len(oos_eq_raw) > 0:
+            st.line_chart(pd.Series(oos_eq_raw), color="#34C759")
+        else:
+            st.caption("에쿼티 데이터 없음")
 
     st.divider()
     
-    # 엑셀 다운로드 섹션
-    st.subheader("📥 엑셀 상세 리포트 내보내기")
-    col_rep1, col_rep2 = st.columns([3, 1])
-    with col_rep1:
-        st.info("💡 성과 요약 지표와 OOS 구간의 모든 체결 내역(진입가, 청산가, PnL %, 청산사유)이 포함된 엑셀 파일을 생성합니다.")
-    with col_rep2:
-        excel_path = export_backtest_to_excel(res, symbol=symbol, timeframe=timeframe)
-        with open(excel_path, "rb") as f:
-            st.download_button("📥 엑셀 리포트 다운로드 (.xlsx)", f, os.path.basename(excel_path), type="primary", use_container_width=True)
-
     # 📝 AI가 합성한 Pine Script v6 코드 뷰어
-    st.divider()
     st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드 (8대 퀀트 지표 융합)")
-    st.caption("아래 코드는 SuperTrend, Macro EMA, Squeeze Momentum, SMC(BOS/FVG), RSI, ADX, Volume MA, 변동성 필터 중 AI 유전 진화로 엄선된 최적 지표 조합과 리스크 관리 엔진으로 작성된 공식 v6 코드입니다.")
+    st.caption("아래 코드는 선택한 차트에 대해 SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA 등 유전 진화로 엄선된 최적 지표 조합과 리스크 관리 엔진으로 작성된 공식 Pine Script v6 코드입니다.")
     
-    code_text = st.session_state.get("generated_code", "")
+    code_text = active_strat.get("pine_code", "")
     st.text_area("Pine Script Code", value=code_text, height=350)
     
     c_btn1, c_btn2 = st.columns(2)
+    strat_sym_clean = active_strat['symbol'].replace('/', '')
+    strat_tf_clean = active_strat['timeframe']
     with c_btn1:
-        st.download_button("💾 파인스크립트 파일 다운로드 (.pine)", code_text, file_name=f"strategy_{symbol.replace('/', '')}_{timeframe}_v6.pine", use_container_width=True)
+        st.download_button(
+            "💾 파인스크립트 파일 다운로드 (.pine)",
+            code_text,
+            file_name=f"strategy_{strat_sym_clean}_{strat_tf_clean}_v6.pine",
+            use_container_width=True
+        )
     with c_btn2:
         if st.button("📋 로컬 strategy_v6.pine 덮어쓰기 저장", use_container_width=True):
             with open("strategy_v6.pine", "w", encoding="utf-8") as f:
                 f.write(code_text)
             st.success("✅ 'strategy_v6.pine' 파일로 성공적으로 저장되었습니다!")
-else:
-    st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 실전 전략 생성] 버튼을 누르시면, 8대 퀀트 지표군(SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA, 변동성 필터)을 다세대 유전 진화로 결합하여 실전 검증된 파인스크립트 v6 코드를 자동 합성합니다.")
+
+    # 📜 과거 전략 히스토리 보관함
+    st.divider()
+    with st.expander("📜 과거 생성된 전략 히스토리 보관함 (영구 보존 목록)", expanded=False):
+        history_list = list_strategy_history()
+        if len(history_list) == 0:
+            st.caption("아직 보관된 과거 전략이 없습니다.")
+        else:
+            hist_options = [
+                f"[{h['timestamp']}] {h['symbol']} ({h['timeframe']}) - 수익률: {h['return_pct']:+.1f}% | 승률: {h['win_rate']:.1f}% | MDD: {h['mdd']:.1f}%"
+                for h in history_list
+            ]
+            selected_hist_idx = st.selectbox("불러올 전략 선택", range(len(hist_options)), format_func=lambda i: hist_options[i])
+            if st.button("📂 선택한 전략 화면에 불러오기", use_container_width=True):
+                chosen_file = history_list[selected_hist_idx]['filepath']
+                loaded = load_strategy_history(chosen_file)
+                if loaded:
+                    st.session_state["active_strategy"] = loaded
+                    st.success(f"✅ [{loaded['symbol']} {loaded['timeframe']}] 전략을 성공적으로 불러왔습니다!")
+                    time.sleep(1)
+                    st.rerun()
+
+elif not is_job_running:
+    st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 고수익 전략 생성] 버튼을 누르시면, 백그라운드에서 10,000회 유전 진화가 시작되며 25%, 50%, 75%, 100% 달성 시 디스코드로 자동 보고됩니다.")
