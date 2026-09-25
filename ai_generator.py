@@ -377,14 +377,14 @@ def _sample_random_candidate():
     cand['use_time_exit'] = random.choice([True, False])
     return cand
 
-def _evaluate_fitness(sim_res, min_trades=25):
+def _evaluate_fitness(sim_res, min_trades=100):
     """
     [실전형 퀀트 적합도 함수 (Fitness Function)]
     1. 최소 거래수(Min Trades) 미달 시 가차없이 탈락 페널티
     2. OOS 샤프 지수 중심 평가
     3. MDD 과다 시 기하급수적 감점
     4. WFO(Walk-Forward Optimization) 일관성 보너스 (IS vs OOS 비율)
-    5. 통계적 신뢰도(거래 표본수 35회 이상) 가산점
+    5. 통계적 신뢰도(거래 표본수 100회 이상) 가산점
     """
     oos = sim_res['oos']
     is_res = sim_res['is']
@@ -423,9 +423,9 @@ def _evaluate_fitness(sim_res, min_trades=25):
     elif overfitting_ratio < 0.3:
         score -= 2.0
         
-    # 7. 풍부한 거래 표본수 가산점 (실전 신뢰도)
-    if trades >= 35:
-        score += min((trades - 35) * 0.02, 1.5)
+    # 7. 풍부한 거래 표본수 가산점 (실전 신뢰도 100회 이상)
+    if trades >= 100:
+        score += min((trades - 100) * 0.01, 1.5)
         
     return score
 
@@ -483,7 +483,7 @@ def _worker_simulate(task_args):
         'sim_res': sim_res
     }
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=150, min_trades=25, num_workers=None, progress_callback=None):
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=150, min_trades=100, num_workers=None, progress_callback=None):
     """
     [다세대 유전 진화 퀀트 탐색 엔진 (Genetic Evolutionary Algorithm)]
     1세대: 전역 무작위 탐색 (다양한 필터 및 리스크 파라미터 조합)

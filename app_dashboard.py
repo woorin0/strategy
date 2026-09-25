@@ -52,7 +52,7 @@ with st.sidebar:
     else:
         timeframe = tf_choice
 
-    start_year = st.selectbox("데이터 시작 연도", ["2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"], index=6, help="Binance 상장 시점부터 현재까지의 시계열 데이터를 자동 수집 및 로컬 캐싱합니다.")
+    start_year = st.selectbox("데이터 시작 연도", ["2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"], index=0, help="Binance 상장 시점부터 현재까지의 시계열 데이터를 자동 수집 및 로컬 캐싱합니다.")
     start_date = f"{start_year}-01-01"
 
     st.markdown("---")
@@ -142,14 +142,14 @@ with st.sidebar:
             
         min_trades = st.number_input(
             "최소 검증 거래수 (Min OOS Trades)", 
-            min_value=10, max_value=150, value=25, step=5,
-            help="표본 부족으로 우연히 발생한 가짜 고수익/과적합 전략을 배제합니다. OOS 구간에서 최소 이 횟수 이상 거래된 전략만 최종 선별됩니다."
+            min_value=10, max_value=500, value=100, step=10,
+            help="표본 부족으로 우연히 발생한 가짜 고수익/과적합 전략을 배제합니다. OOS 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다."
         )
         
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"🧬 **다세대 유전 진화 알고리즘 풀가동**: 7개 필터 지표(SMC, Squeeze, RSI, ADX 등)의 최적 조합과 리스크 관리 파라미터를 {workers_to_use}개 CPU 코어로 {ai_iterations}회 다세대 유전 교차/돌연변이 탐색하여 실전형 Pine Script v6 코드를 합성합니다.")
+        st.info(f"🧬 **다세대 유전 진화 알고리즘 풀가동**: 8대 퀀트 지표군(SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA, 변동성 필터)의 최적 조합과 리스크 관리 파라미터를 {workers_to_use}개 CPU 코어로 {ai_iterations}회 다세대 유전 교차/돌연변이 탐색하여 실전형 Pine Script v6 코드를 합성합니다.")
         btn_ai_run = st.button("🤖 AI 심층 진화 & 실전 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
@@ -307,8 +307,8 @@ if "last_result" in st.session_state:
 
     # 📝 AI가 합성한 Pine Script v6 코드 뷰어
     st.divider()
-    st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드 (SMC & Squeeze 탑재)")
-    st.caption("아래 코드는 선택한 차트 시계열에 대해 SuperTrend, Smart Money Concepts, Squeeze Momentum 지표를 결합하여 작성된 공식 v6 코드입니다.")
+    st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드 (8대 퀀트 지표 융합)")
+    st.caption("아래 코드는 SuperTrend, Macro EMA, Squeeze Momentum, SMC(BOS/FVG), RSI, ADX, Volume MA, 변동성 필터 중 AI 유전 진화로 엄선된 최적 지표 조합과 리스크 관리 엔진으로 작성된 공식 v6 코드입니다.")
     
     code_text = st.session_state.get("generated_code", "")
     st.text_area("Pine Script Code", value=code_text, height=350)
@@ -322,4 +322,4 @@ if "last_result" in st.session_state:
                 f.write(code_text)
             st.success("✅ 'strategy_v6.pine' 파일로 성공적으로 저장되었습니다!")
 else:
-    st.info("👈 좌측 사이드바에서 [🤖 AI 자율 분석 및 전략 코드 생성] 버튼을 누르시면, SMC & Squeeze 지표를 결합하여 초고속으로 파인스크립트 코드를 자동 합성합니다.")
+    st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 실전 전략 생성] 버튼을 누르시면, 8대 퀀트 지표군(SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA, 변동성 필터)을 다세대 유전 진화로 결합하여 실전 검증된 파인스크립트 v6 코드를 자동 합성합니다.")
