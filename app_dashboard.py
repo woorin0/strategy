@@ -32,7 +32,36 @@ with st.sidebar:
             st_period = st.slider("SuperTrend Period", 3, 21, 7)
             st_mult = st.slider("SuperTrend Multiplier", 1.5, 5.0, 3.0, 0.1)
             
-        with st.expander("🛡️ 거시 레짐 & 변동성 필터", expanded=True):
+        with st.expander("⚡ Squeeze Momentum (LazyBear)", expanded=True):
+            use_squeeze = st.checkbox("Squeeze Momentum 필터 사용", value=True)
+            sqz_len = st.number_input("Squeeze Length", 10, 50, 20, 1)
+            bb_mult = st.slider("BB StdDev Multiplier", 1.0, 3.0, 2.0, 0.1)
+            kc_mult = st.slider("KC ATR Multiplier", 1.0, 3.0, 1.5, 0.1)
+
+        with st.expander("💡 Smart Money Concepts (SMC)", expanded=True):
+            use_smc = st.checkbox("Smart Money Concepts 필터 사용", value=False)
+            smc_swing_len = st.slider("SMC Swing Length (Pivot)", 2, 15, 5)
+            smc_mode = st.selectbox("SMC 판정 모드", ["Structure", "FVG", "Both"], index=0)
+
+        with st.expander("📈 RSI (상대강도지수 & 과매수/과매도)", expanded=False):
+            use_rsi = st.checkbox("RSI 필터 사용", value=False)
+            rsi_len = st.number_input("RSI Length", 5, 50, 14, 1)
+            rsi_mode = st.selectbox("RSI 필터 모드", ["Boundary", "Momentum"], index=0, help="Boundary: 과열 진입 제한 / Momentum: 50선 추세 정렬")
+            c_rsi1, c_rsi2 = st.columns(2)
+            with c_rsi1: rsi_ob = st.number_input("과매수 제한 (OB)", 50.0, 95.0, 70.0, 5.0)
+            with c_rsi2: rsi_os = st.number_input("과매도 제한 (OS)", 5.0, 50.0, 30.0, 5.0)
+
+        with st.expander("🌪️ ADX (추세 강도 필터)", expanded=False):
+            use_adx = st.checkbox("ADX 추세 강도 필터 사용", value=False)
+            adx_len = st.number_input("ADX Length", 5, 50, 14, 1)
+            adx_threshold = st.slider("최소 ADX 추세 강도", 10.0, 50.0, 20.0, 1.0, help="ADX가 이 기준 이상일 때만 추세 진입 허용(횡보장 휩소 차단)")
+
+        with st.expander("📊 Volume MA (거래량 수급 확인)", expanded=False):
+            use_vol = st.checkbox("거래량 수급 필터 사용", value=False)
+            vol_ma_len = st.number_input("거래량 MA Length", 5, 100, 20, 5)
+            vol_mult = st.slider("거래량 배수", 0.5, 3.0, 1.0, 0.1, help="현재 거래량이 거래량 MA의 N배 이상일 때만 진입")
+
+        with st.expander("🛡️ 거시 레짐 & 변동성 필터", expanded=False):
             use_ema_filter = st.checkbox("거시 EMA 필터 사용", value=True)
             ema_len = st.number_input("Macro EMA Length", 50, 400, 200, 10)
             use_min_volat = st.checkbox("최소 변동성(Min Width) 필터 사용", value=True)
@@ -63,11 +92,10 @@ with st.sidebar:
         st.markdown("### 2. AI 에이전트 자율 진화 설정")
         ai_iterations = st.slider("탐색 세대 수 (Iterations)", 5, 100, 30, 5)
         
-        # 병렬 코어 수 설정 (고스펙 서버 대응)
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"⚡ **{workers_to_use}개 CPU 코어 풀가동 모드**: 모든 가용 코어를 활용해 병렬 분산 처리하여 초고속으로 전략을 합성합니다.")
+        st.info(f"⚡ **SMC & Squeeze Momentum 결합 병렬 모드**: SuperTrend, Smart Money Concepts, Squeeze Momentum 지표의 시너지를 {workers_to_use}개 CPU 코어로 자율 탐색하여 최적의 파인스크립트 코드를 합성합니다.")
         btn_ai_run = st.button("🤖 AI 자율 분석 및 전략 코드 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
@@ -86,7 +114,7 @@ def draw_metric(col, label, val_is, val_oos, color="#34C759"):
 
 # ----------------- [AI 에이전트 자율 생성 모드 로직] -----------------
 if btn_ai_run:
-    prog_bar = st.progress(0, text="데이터 수집 및 환경 구성 중...")
+    prog_bar = st.progress(0, text="데이터 수집 및 지표 환경 구성 중...")
     df = get_cached_data(symbol, timeframe)
     
     def update_p(val, txt):
@@ -98,7 +126,7 @@ if btn_ai_run:
     st.session_state["generated_code"] = ai_res["pine_code"]
     prog_bar.empty()
     st.balloons()
-    st.success(f"🏆 AI 에이전트가 {ai_res['workers_used']}개 코어로 {ai_res['total_evaluated']}세대를 **{ai_res['elapsed_time_sec']}초 만에 병렬 완파**하고 최적의 Pine Script v6 전략 코드를 합성했습니다!")
+    st.success(f"🏆 AI 에이전트가 SMC & Squeeze 지표를 결합하여 {ai_res['workers_used']}개 코어로 {ai_res['total_evaluated']}세대를 **{ai_res['elapsed_time_sec']}초 만에 병렬 완파**하고 최적의 Pine Script v6 코드를 합성했습니다!")
 
 # ----------------- [수동 백테스트 모드 로직] -----------------
 if btn_manual_run:
@@ -106,6 +134,11 @@ if btn_manual_run:
         df = get_cached_data(symbol, timeframe)
         params = {
             'st_period': st_period, 'st_mult': st_mult,
+            'use_squeeze': use_squeeze, 'sqz_len': sqz_len, 'bb_mult': bb_mult, 'kc_mult': kc_mult,
+            'use_smc': use_smc, 'smc_swing_len': smc_swing_len, 'smc_mode': smc_mode,
+            'use_rsi': use_rsi, 'rsi_len': rsi_len, 'rsi_mode': rsi_mode, 'rsi_ob': rsi_ob, 'rsi_os': rsi_os,
+            'use_adx': use_adx, 'adx_len': adx_len, 'adx_threshold': adx_threshold,
+            'use_vol': use_vol, 'vol_ma_len': vol_ma_len, 'vol_mult': vol_mult,
             'ema_len': ema_len, 'use_ema_filter': use_ema_filter,
             'min_width_pct': min_width_pct, 'use_min_volat': use_min_volat,
             'tr_ma_len': tr_ma_len, 'use_tr_exit': use_tr_exit,
@@ -163,8 +196,8 @@ if "last_result" in st.session_state:
 
     # 📝 AI가 합성한 Pine Script v6 코드 뷰어
     st.divider()
-    st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드")
-    st.caption("아래 코드는 선택한 차트 시계열에 대해 AI 에이전트가 자율 최적화하여 작성한 완전한 코드입니다. 복사하여 트레이딩뷰에 바로 붙여넣으실 수 있습니다.")
+    st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드 (SMC & Squeeze 탑재)")
+    st.caption("아래 코드는 선택한 차트 시계열에 대해 SuperTrend, Smart Money Concepts, Squeeze Momentum 지표를 결합하여 작성된 공식 v6 코드입니다.")
     
     code_text = st.session_state.get("generated_code", "")
     st.text_area("Pine Script Code", value=code_text, height=350)
@@ -178,4 +211,4 @@ if "last_result" in st.session_state:
                 f.write(code_text)
             st.success("✅ 'strategy_v6.pine' 파일로 성공적으로 저장되었습니다!")
 else:
-    st.info("👈 좌측 사이드바에서 [🤖 AI 자율 분석 및 전략 코드 생성] 버튼을 누르시면, 서버의 모든 CPU 코어를 풀가동하여 초고속으로 파인스크립트 코드를 자동 합성합니다.")
+    st.info("👈 좌측 사이드바에서 [🤖 AI 자율 분석 및 전략 코드 생성] 버튼을 누르시면, SMC & Squeeze 지표를 결합하여 초고속으로 파인스크립트 코드를 자동 합성합니다.")

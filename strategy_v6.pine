@@ -1,5 +1,5 @@
 //@version=6
-strategy("AI Evolved Quantitative Strategy v6 (Dual Architecture)", 
+strategy("AI Evolved Quantitative Strategy v6 (SMC & Squeeze Engine)", 
          overlay=true, 
          initial_capital=10000, 
          default_qty_type=strategy.percent_of_equity, 
@@ -17,21 +17,54 @@ group_st = "1. SuperTrend Engine"
 st_period = input.int(7, "SuperTrend ATR Period", minval=1, group=group_st)
 st_mult   = input.float(3.0, "SuperTrend Factor/Multiplier", minval=0.1, step=0.1, group=group_st)
 
-// --- [Group 2: Macro Regime & 변동성 필터 (참조 코드에서 도입: Min Width & Volatility)] ---
-group_filter = "2. Macro Regime & Volatility Filter"
+// --- [Group 2: Squeeze Momentum (LazyBear)] ---
+group_sqz = "2. Squeeze Momentum (LazyBear)"
+use_squeeze = input.bool(true, "Enable Squeeze Momentum Filter", group=group_sqz)
+sqz_len     = input.int(20, "Squeeze Length", minval=5, group=group_sqz)
+bb_mult     = input.float(2.0, "BB StdDev Multiplier", minval=0.5, step=0.1, group=group_sqz)
+kc_mult     = input.float(1.5, "KC ATR Multiplier", minval=0.5, step=0.1, group=group_sqz)
+
+// --- [Group 3: Smart Money Concepts (SMC)] ---
+group_smc = "3. Smart Money Concepts (SMC)"
+use_smc       = input.bool(false, "Enable Smart Money Concepts Filter", group=group_smc)
+smc_swing_len = input.int(5, "SMC Swing Length (Pivot)", minval=2, group=group_smc)
+smc_mode      = input.string("Structure", "SMC Validation Mode", options=["Structure", "FVG", "Both"], group=group_smc)
+
+// --- [Group 4: Macro Regime & 변동성 필터] ---
+group_filter = "4. Macro Regime & Volatility Filter"
 use_ema_filter = input.bool(true, "Use Macro Trend EMA Filter", group=group_filter)
 ema_len        = input.int(200, "Macro EMA Length", minval=10, group=group_filter)
 use_min_volat  = input.bool(true, "Use Min Width (Volatility Filter)", group=group_filter)
-min_width_pct  = input.float(1.5, "Min Volatility Width (%)", minval=0.0, step=0.1, tooltip="변동성(고가-저가)/종가 비율이 최소 기준 이하인 횡보장 진입 차단", group=group_filter)
+min_width_pct  = input.float(1.5, "Min Volatility Width (%)", minval=0.0, step=0.1, tooltip="최근 20봉 평균 변동폭이 최소 기준 이하인 횡보장 차단", group=group_filter)
 
-// --- [Group 3: TR MA (참조 코드에서 도입: 추세 이탈 비상 청산)] ---
-group_trma = "3. Trend Reversal MA (TR MA Emergency Exit)"
+// --- [Group 5: RSI Filter (상대강도지수 & 과매수/과매도)] ---
+group_rsi = "5. RSI (Relative Strength Index) Filter"
+use_rsi_filter = input.bool(false, "Enable RSI Filter", group=group_rsi)
+rsi_len        = input.int(14, "RSI Length", minval=1, group=group_rsi)
+rsi_mode       = input.string("Boundary", "RSI Filter Mode", options=["Boundary", "Momentum"], group=group_rsi)
+rsi_ob         = input.float(70.0, "Overbought Level (Max for Long)", minval=50.0, maxval=95.0, group=group_rsi)
+rsi_os         = input.float(30.0, "Oversold Level (Min for Short)", minval=5.0, maxval=50.0, group=group_rsi)
+
+// --- [Group 6: ADX Filter (추세 강도 필터)] ---
+group_adx = "6. ADX (Trend Strength) Filter"
+use_adx_filter = input.bool(false, "Enable ADX Filter", group=group_adx)
+adx_len        = input.int(14, "ADX Length", minval=1, group=group_adx)
+adx_threshold  = input.float(20.0, "Min ADX Trend Strength", minval=5.0, step=1.0, group=group_adx)
+
+// --- [Group 7: Volume Confirmation Filter (거래량 수급 확인)] ---
+group_vol = "7. Volume Confirmation Filter"
+use_vol_filter = input.bool(false, "Enable Volume MA Filter", group=group_vol)
+vol_ma_len     = input.int(20, "Volume MA Length", minval=1, group=group_vol)
+vol_mult       = input.float(1.0, "Volume Multiplier", minval=0.5, step=0.1, group=group_vol)
+
+// --- [Group 8: TR MA (추세 이탈 비상 탈출)] ---
+group_trma = "8. Trend Reversal MA (TR MA Emergency Exit)"
 use_tr_exit  = input.bool(true, "Enable TR MA Exit", group=group_trma)
 tr_ma_type   = input.string("EMA", "TR MA Type", options=["SMA", "EMA", "RMA", "WMA"], group=group_trma)
 tr_ma_len    = input.int(100, "TR MA Length", minval=10, group=group_trma)
 
-// --- [Group 4: 하이브리드 TP/SL (참조 코드에서 도입: Fixed vs ATR vs Both)] ---
-group_tpsl = "4. Hybrid Take Profit & Stop Loss"
+// --- [Group 9: 하이브리드 TP/SL] ---
+group_tpsl = "9. Hybrid Take Profit & Stop Loss"
 tp_mode      = input.string("ATR", "TP Price Mode", options=["None", "Fixed", "ATR", "Both"], group=group_tpsl)
 sl_mode      = input.string("ATR", "SL Price Mode", options=["None", "Fixed", "ATR", "Both"], group=group_tpsl)
 tp_fixed_pct = input.float(3.0, "Fixed Take Profit (%)", minval=0.1, step=0.1, group=group_tpsl)
@@ -39,8 +72,8 @@ sl_fixed_pct = input.float(2.0, "Fixed Stop Loss (%)", minval=0.1, step=0.1, gro
 tp_atr_mult  = input.float(3.5, "TP ATR Multiplier", minval=0.5, step=0.1, group=group_tpsl)
 sl_atr_mult  = input.float(2.0, "SL ATR Multiplier", minval=0.5, step=0.1, group=group_tpsl)
 
-// --- [Group 5: 시간 기반 청산 (Time-based Expiry)] ---
-group_time = "5. Time Expiry Exit"
+// --- [Group 10: 시간 기반 청산] ---
+group_time = "10. Time Expiry Exit"
 use_time_exit = input.bool(true, "Enable Time Expiry Exit", group=group_time)
 max_bars_hold = input.int(72, "Max Holding Bars (Hours)", minval=1, group=group_time)
 
@@ -54,46 +87,100 @@ f_ma(source, length, type) =>
     type == "RMA" ? ta.rma(source, length) :
     type == "WMA" ? ta.wma(source, length) : na
 
-// 1) 거시 EMA
 macro_ema = ta.ema(close, ema_len)
-
-// 2) SuperTrend 계산
 [st_line, st_dir] = ta.supertrend(st_mult, st_period)
-// st_dir == -1: 상승 추세(Uptrend), st_dir == 1: 하락 추세(Downtrend)
-
-// 3) ATR 변동성 계산
 atr_val = ta.atr(14)
 
-// 4) 변동성 필터: (High - Low) / Close 백분율
 bar_volat_pct = ((high - low) / math.max(close, syminfo.mintick)) * 100
 volat_ma = ta.sma(bar_volat_pct, 20)
 volat_pass = not use_min_volat or (volat_ma >= min_width_pct)
-
-// 5) TR MA (추세 이탈 비상 라인)
 tr_ma = f_ma(close, tr_ma_len, tr_ma_type)
+
+// --- Squeeze Momentum (LazyBear 공식) ---
+bb_basis = ta.sma(close, sqz_len)
+bb_dev = bb_mult * ta.stdev(close, sqz_len)
+bb_up = bb_basis + bb_dev
+bb_dn = bb_basis - bb_dev
+
+kc_tr = ta.rma(ta.tr, sqz_len)
+kc_up = bb_basis + kc_mult * kc_tr
+kc_dn = bb_basis - kc_mult * kc_tr
+
+sqz_on = (bb_dn > kc_dn) and (bb_up < kc_up)
+sqz_off = (bb_dn < kc_dn) and (bb_up > kc_up)
+highest_h = ta.highest(high, sqz_len)
+lowest_l = ta.lowest(low, sqz_len)
+sqz_mom = ta.linreg(close - math.avg(math.avg(highest_h, lowest_l), bb_basis), sqz_len, 0)
+
+sqz_long_pass  = not use_squeeze or (sqz_mom > 0)
+sqz_short_pass = not use_squeeze or (sqz_mom < 0)
+
+// --- Smart Money Concepts (BOS & FVG) ---
+p_high = ta.pivothigh(high, smc_swing_len, smc_swing_len)
+p_low  = ta.pivotlow(low, smc_swing_len, smc_swing_len)
+var float last_p_high = na
+var float last_p_low = na
+if not na(p_high)
+    last_p_high := p_high
+if not na(p_low)
+    last_p_low := p_low
+
+var int market_structure = 0
+if not na(last_p_high) and close > last_p_high
+    market_structure := 1
+else if not na(last_p_low) and close < last_p_low
+    market_structure := -1
+
+bull_structure = (market_structure == 1)
+bear_structure = (market_structure == -1)
+
+bull_fvg = low > high[2]
+bear_fvg = high < low[2]
+var int last_bull_fvg_bar = -999
+var int last_bear_fvg_bar = -999
+if bull_fvg
+    last_bull_fvg_bar := bar_index
+if bear_fvg
+    last_bear_fvg_bar := bar_index
+
+recent_bull_fvg = (bar_index - last_bull_fvg_bar) <= 5
+recent_bear_fvg = (bar_index - last_bear_fvg_bar) <= 5
+
+smc_long_pass  = not use_smc or (smc_mode == "Structure" ? bull_structure : smc_mode == "FVG" ? recent_bull_fvg : (bull_structure and recent_bull_fvg))
+smc_short_pass = not use_smc or (smc_mode == "Structure" ? bear_structure : smc_mode == "FVG" ? recent_bear_fvg : (bear_structure and recent_bear_fvg))
+
+// --- RSI (Relative Strength Index) ---
+rsi_val = ta.rsi(close, rsi_len)
+rsi_long_pass  = not use_rsi_filter or (rsi_mode == "Boundary" ? (rsi_val < rsi_ob) : (rsi_val > 50.0))
+rsi_short_pass = not use_rsi_filter or (rsi_mode == "Boundary" ? (rsi_val > rsi_os) : (rsi_val < 50.0))
+
+// --- ADX (Average Directional Index) ---
+[diplus, diminus, adx_val] = ta.dmi(adx_len, adx_len)
+adx_pass = not use_adx_filter or (adx_val >= adx_threshold)
+
+// --- Volume MA Filter ---
+vol_ma = ta.sma(volume, vol_ma_len)
+vol_pass = not use_vol_filter or (volume >= vol_ma * vol_mult)
 
 
 // ==========================================
 // 3. 진입 및 청산 트리거 로직
 // ==========================================
-// SuperTrend 반전 감지
 bull_flip = (st_dir == -1) and (st_dir[1] == 1)
 bear_flip = (st_dir == 1) and (st_dir[1] == -1)
 
-// 거시 레짐 필터 정합성
 long_regime  = not use_ema_filter or (close > macro_ema)
 short_regime = not use_ema_filter or (close < macro_ema)
 
-// 최종 진입 조건
-long_condition  = bull_flip and long_regime and volat_pass
-short_condition = bear_flip and short_regime and volat_pass
+long_condition  = bull_flip and long_regime and volat_pass and sqz_long_pass and smc_long_pass and rsi_long_pass and adx_pass and vol_pass
+short_condition = bear_flip and short_regime and volat_pass and sqz_short_pass and smc_short_pass and rsi_short_pass and adx_pass and vol_pass
 
-// 포지션 진입가 추적
 hasOpenTrade = strategy.opentrades > 0
 entry_price = hasOpenTrade ? strategy.opentrades.entry_price(strategy.opentrades - 1) : na
 
+
 // ==========================================
-// 4. 하이브리드 TP / SL 레벨 연산 (참조 코드 도입 로직)
+// 4. 하이브리드 TP / SL 레벨 연산
 // ==========================================
 calc_tp(is_long, base_price) =>
     float tp_p = na
@@ -121,8 +208,8 @@ calc_sl(is_long, base_price) =>
             sl_p := is_long ? math.max(fixed_p, atr_p) : math.min(fixed_p, atr_p)
     sl_p
 
-tp_long_level = calc_tp(true, entry_price)
-sl_long_level = calc_sl(true, entry_price)
+tp_long_level  = calc_tp(true, entry_price)
+sl_long_level  = calc_sl(true, entry_price)
 tp_short_level = calc_tp(false, entry_price)
 sl_short_level = calc_sl(false, entry_price)
 
@@ -145,28 +232,28 @@ if short_condition
     strategy.entry("Short", strategy.short, comment="ST_Bear_Entry")
     bars_in_trade := 0
 
-// 2) 하이브리드 TP/SL 청산 (strategy.exit)
+// 2) 하이브리드 TP/SL 청산
 if strategy.position_size > 0
     strategy.exit("Exit_Long", "Long", limit=tp_long_level, stop=sl_long_level, comment="TP/SL_Long")
 
 if strategy.position_size < 0
     strategy.exit("Exit_Short", "Short", limit=tp_short_level, stop=sl_short_level, comment="TP/SL_Short")
 
-// 3) SuperTrend 반전 청산 (Reversal Exit)
+// 3) SuperTrend 반전 청산
 if (strategy.position_size > 0) and bear_flip
     strategy.close("Long", comment="ST_Bear_Flip_Exit")
 
 if (strategy.position_size < 0) and bull_flip
     strategy.close("Short", comment="ST_Bull_Flip_Exit")
 
-// 4) TR MA 이탈 시 비상 탈출 청산 (참조 코드의 closeLongPosition 로직 도입)
+// 4) TR MA 이탈 시 비상 탈출 청산
 if use_tr_exit and (strategy.position_size > 0) and ta.crossunder(close, tr_ma)
     strategy.close("Long", comment="TR_MA_Exit_Long")
 
 if use_tr_exit and (strategy.position_size < 0) and ta.crossover(close, tr_ma)
     strategy.close("Short", comment="TR_MA_Exit_Short")
 
-// 5) 시간 기반 만기 청산 (Time Expiry)
+// 5) 시간 기반 만기 청산
 if use_time_exit and (bars_in_trade >= max_bars_hold)
     if strategy.position_size > 0
         strategy.close("Long", comment="Time_Expiry_Long")

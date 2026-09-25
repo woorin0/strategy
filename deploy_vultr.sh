@@ -7,7 +7,7 @@ set -e
 
 echo "🚀 [1/5] Vultr 리눅스 시스템 패키지 업데이트 및 필수 도구 설치..."
 sudo apt-get update -y
-sudo apt-get install -y python3 python3-pip python3-venv git curl ufw
+sudo apt-get install -y python3 python3-pip python3-venv python3-dev build-essential git curl ufw
 
 APP_DIR=$(pwd)
 echo "📁 현재 작업 경로: $APP_DIR"
