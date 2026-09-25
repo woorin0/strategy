@@ -1,9 +1,24 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import datetime
 import os
 import glob
+import datetime
+import pandas as pd
+import numpy as np
+
+# [Plotly 6+ 호환성 패치: vectorbt 기본 테마의 deprecated scattermapbox 자동 처리]
+try:
+    import plotly.graph_objs.layout.template as _p_template
+    _orig_data_init = _p_template.Data.__init__
+    def _patched_data_init(self, arg=None, **kwargs):
+        if isinstance(arg, dict):
+            arg = arg.copy()
+            arg.pop('scattermapbox', None)
+        kwargs.pop('scattermapbox', None)
+        return _orig_data_init(self, arg=arg, **kwargs)
+    _p_template.Data.__init__ = _patched_data_init
+except Exception:
+    pass
+
+import streamlit as st
 from data_manager import get_cached_data
 from quant_engine import run_simulation
 from report_exporter import export_backtest_to_excel

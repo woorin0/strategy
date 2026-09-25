@@ -32,6 +32,7 @@ echo "🐍 [4/6] 파이썬 가상환경 생성 및 패키지 설치..."
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
+pip install "plotly<6.0.0"
 pip install -r requirements.txt
 
 echo "🛡️ [5/6] 방화벽(UFW) 8501 포트 개방..."

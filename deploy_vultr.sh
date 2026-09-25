@@ -20,6 +20,7 @@ source venv/bin/activate
 
 echo "📦 [3/5] 필수 퀀트 패키지 설치 중 (requirements.txt)..."
 pip install --upgrade pip
+pip install "plotly<6.0.0"
 pip install -r requirements.txt
 
 echo "🛡️ [4/5] Vultr 방화벽(UFW) 8501 포트 개방..."
