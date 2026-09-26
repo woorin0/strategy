@@ -3,7 +3,7 @@ import numpy as np
 import os
 import time
 import random
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from quant_engine import run_simulation
 
 def generate_pine_script_v6(strategy_title, params, metrics_summary):
@@ -536,7 +536,7 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         gen_results = []
         
         if num_workers > 1:
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(_worker_simulate, t): t for t in tasks}
                 for f in as_completed(futures):
                     res = f.result()

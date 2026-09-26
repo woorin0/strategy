@@ -7,7 +7,7 @@ import pandas as pd
 from ai_generator import run_ai_evolution_search
 from discord_notifier import send_progress_alert, send_strategy_alert, DEFAULT_WEBHOOK_URL
 
-RESULTS_DIR = r"d:\Antigravity\전략코드 생성\results"
+RESULTS_DIR = os.path.join(os.getcwd(), "results")
 HISTORY_DIR = os.path.join(RESULTS_DIR, "strategy_history")
 STATUS_FILE = os.path.join(RESULTS_DIR, "evolution_job.json")
 LATEST_STRATEGY_FILE = os.path.join(RESULTS_DIR, "latest_strategy.json")
@@ -243,7 +243,7 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
             f.write(pine_code)
             
         # 3) 루트의 strategy_v6.pine 자동 동기화
-        root_pine = r"d:\Antigravity\전략코드 생성\strategy_v6.pine"
+        root_pine = os.path.join(os.getcwd(), "strategy_v6.pine")
         with open(root_pine, "w", encoding="utf-8") as f:
             f.write(pine_code)
             
