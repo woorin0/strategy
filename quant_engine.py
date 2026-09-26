@@ -418,6 +418,15 @@ def run_simulation(df, params, split_ratio=0.70):
     # 2. 거래 시뮬레이션
     split_idx = int(n * split_ratio)
     
+    tp_fixed_pct = params.get('tp_fixed_pct', 3.0)
+    sl_fixed_pct = params.get('sl_fixed_pct', 2.0)
+    tp_atr_mult = params.get('tp_atr_mult', 3.5)
+    sl_atr_mult = params.get('sl_atr_mult', 2.0)
+    tp_mode = params.get('tp_mode', 'ATR')
+    sl_mode = params.get('sl_mode', 'ATR')
+    max_bars_hold = params.get('max_bars_hold', 72)
+    use_time_exit = params.get('use_time_exit', True)
+
     def simulate_range(s_idx, e_idx):
         sub_c = c[s_idx:e_idx]
         sub_o = o[s_idx:e_idx]
@@ -433,12 +442,9 @@ def run_simulation(df, params, split_ratio=0.70):
         entry_p = 0.0
         bars_held = 0
         
-        ent_l = np.zeros(len(sub_c), dtype=bool)
-        ext_l = np.zeros(len(sub_c), dtype=bool)
-        ent_s = np.zeros(len(sub_c), dtype=bool)
-        ext_s = np.zeros(len(sub_c), dtype=bool)
-        
         trade_logs = []
+        equity_curve_points = [(sub_idx[0], 10000.0)]
+        curr_equity = 10000.0
         
         for i in range(len(sub_c)):
             ca = sub_atr[i] if not np.isnan(sub_atr[i]) else sub_c[i] * 0.015
@@ -450,24 +456,21 @@ def run_simulation(df, params, split_ratio=0.70):
             if in_pos == 1:
                 bars_held += 1
                 # TP / SL 계산
-                fixed_tp = entry_p * (1.0 + params.get('tp_fixed_pct', 3.0) * 0.01)
-                atr_tp   = entry_p + (params.get('tp_atr_mult', 3.5) * ca)
-                tp_mode  = params.get('tp_mode', 'ATR')
+                fixed_tp = entry_p * (1.0 + tp_fixed_pct * 0.01)
+                atr_tp   = entry_p + (tp_atr_mult * ca)
                 tp_p = fixed_tp if tp_mode == 'Fixed' else atr_tp if tp_mode == 'ATR' else max(fixed_tp, atr_tp) if tp_mode == 'Both' else 999999.0
                 
-                fixed_sl = entry_p * (1.0 - params.get('sl_fixed_pct', 2.0) * 0.01)
-                atr_sl   = entry_p - (params.get('sl_atr_mult', 2.0) * ca)
-                sl_mode  = params.get('sl_mode', 'ATR')
+                fixed_sl = entry_p * (1.0 - sl_fixed_pct * 0.01)
+                atr_sl   = entry_p - (sl_atr_mult * ca)
                 sl_p = fixed_sl if sl_mode == 'Fixed' else atr_sl if sl_mode == 'ATR' else max(fixed_sl, atr_sl) if sl_mode == 'Both' else 0.0
                 
                 hit_tp = ch >= tp_p
                 hit_sl = cl <= sl_p
                 hit_tr = use_tr and (cc < sub_tr_ma[i])
-                hit_time = params.get('use_time_exit', True) and (bars_held >= params.get('max_bars_hold', 72))
+                hit_time = use_time_exit and (bars_held >= max_bars_hold)
                 hit_rev = sub_ss[i]
                 
                 if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    ext_l[i] = True
                     reason = "TP" if hit_tp else "SL" if hit_sl else "TR_MA" if hit_tr else "Time" if hit_time else "Reverse"
                     exit_price = tp_p if hit_tp else sl_p if hit_sl else sub_o[i]
                     pnl_pct = (exit_price / entry_p - 1.0) * 100 - 0.05
@@ -476,34 +479,33 @@ def run_simulation(df, params, split_ratio=0.70):
                         'type': 'Long', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
                         'pnl_pct': round(pnl_pct, 2), 'reason': reason
                     })
+                    curr_equity *= (1.0 + pnl_pct / 100.0)
+                    equity_curve_points.append((sub_idx[i], curr_equity))
+
                     in_pos = 0
                     if hit_rev:
                         in_pos = -1
                         entry_p = sub_o[i]
                         entry_time = sub_idx[i]
                         bars_held = 0
-                        ent_s[i] = True
                         
             elif in_pos == -1:
                 bars_held += 1
-                fixed_tp = entry_p * (1.0 - params.get('tp_fixed_pct', 3.0) * 0.01)
-                atr_tp   = entry_p - (params.get('tp_atr_mult', 3.5) * ca)
-                tp_mode  = params.get('tp_mode', 'ATR')
+                fixed_tp = entry_p * (1.0 - tp_fixed_pct * 0.01)
+                atr_tp   = entry_p - (tp_atr_mult * ca)
                 tp_p = fixed_tp if tp_mode == 'Fixed' else atr_tp if tp_mode == 'ATR' else min(fixed_tp, atr_tp) if tp_mode == 'Both' else 0.0
                 
-                fixed_sl = entry_p * (1.0 + params.get('sl_fixed_pct', 2.0) * 0.01)
-                atr_sl   = entry_p + (params.get('sl_atr_mult', 2.0) * ca)
-                sl_mode  = params.get('sl_mode', 'ATR')
+                fixed_sl = entry_p * (1.0 + sl_fixed_pct * 0.01)
+                atr_sl   = entry_p + (sl_atr_mult * ca)
                 sl_p = fixed_sl if sl_mode == 'Fixed' else atr_sl if sl_mode == 'ATR' else min(fixed_sl, atr_sl) if sl_mode == 'Both' else 999999.0
                 
                 hit_tp = cl <= tp_p
                 hit_sl = ch >= sl_p
                 hit_tr = use_tr and (cc > sub_tr_ma[i])
-                hit_time = params.get('use_time_exit', True) and (bars_held >= params.get('max_bars_hold', 72))
+                hit_time = use_time_exit and (bars_held >= max_bars_hold)
                 hit_rev = sub_ls[i]
                 
                 if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    ext_s[i] = True
                     reason = "TP" if hit_tp else "SL" if hit_sl else "TR_MA" if hit_tr else "Time" if hit_time else "Reverse"
                     exit_price = tp_p if hit_tp else sl_p if hit_sl else sub_o[i]
                     pnl_pct = (entry_p / exit_price - 1.0) * 100 - 0.05
@@ -512,13 +514,15 @@ def run_simulation(df, params, split_ratio=0.70):
                         'type': 'Short', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
                         'pnl_pct': round(pnl_pct, 2), 'reason': reason
                     })
+                    curr_equity *= (1.0 + pnl_pct / 100.0)
+                    equity_curve_points.append((sub_idx[i], curr_equity))
+
                     in_pos = 0
                     if hit_rev:
                         in_pos = 1
                         entry_p = sub_o[i]
                         entry_time = sub_idx[i]
                         bars_held = 0
-                        ent_l[i] = True
                         
             if in_pos == 0:
                 if sub_ls[i]:
@@ -526,31 +530,47 @@ def run_simulation(df, params, split_ratio=0.70):
                     entry_p = sub_o[i]
                     entry_time = sub_idx[i]
                     bars_held = 0
-                    ent_l[i] = True
                 elif sub_ss[i]:
                     in_pos = -1
                     entry_p = sub_o[i]
                     entry_time = sub_idx[i]
                     bars_held = 0
-                    ent_s[i] = True
                     
-        # VectorBT 포트폴리오
-        pf = vbt.Portfolio.from_signals(
-            pd.Series(sub_c, index=sub_idx),
-            entries=pd.Series(ent_l, index=sub_idx),
-            exits=pd.Series(ext_l, index=sub_idx),
-            short_entries=pd.Series(ent_s, index=sub_idx),
-            short_exits=pd.Series(ext_s, index=sub_idx),
-            fees=0.0005, slippage=0.0002, freq='1h'
-        )
-        
-        t = pf.trades.count()
-        sh = float(pf.sharpe_ratio()) if t > 0 else 0.0
-        mdd = float(pf.max_drawdown()) * 100 if t > 0 else 100.0
-        wr = float(pf.trades.win_rate()) * 100 if t > 0 else 0.0
-        ret = float(pf.total_return()) * 100 if t > 0 else 0.0
-        
-        equity_series = pf.value()
+        # 커스텀 지표 계산
+        t = len(trade_logs)
+        if t > 0:
+            returns = np.array([tr['pnl_pct'] / 100.0 for tr in trade_logs])
+            wins = np.sum(returns > 0)
+            wr = (wins / t) * 100.0
+            ret = (curr_equity / 10000.0 - 1.0) * 100.0
+
+            # MDD (Max Drawdown) calculation from equity curve points
+            eq_vals = np.array([pt[1] for pt in equity_curve_points])
+            roll_max = np.maximum.accumulate(eq_vals)
+            drawdowns = (eq_vals - roll_max) / roll_max
+            mdd = abs(np.min(drawdowns)) * 100.0
+
+            # Sharpe Ratio
+            mean_ret = np.mean(returns)
+            std_ret = np.std(returns)
+            # Assuming ~1000 trades per year for hourly crypto strategies as a rough annualization factor
+            # Alternatively, standardizing per trade: mean/std * sqrt(trades)
+            sh = float(mean_ret / std_ret * np.sqrt(t)) if std_ret > 1e-8 else 0.0
+        else:
+            wr = 0.0
+            ret = 0.0
+            mdd = 100.0
+            sh = 0.0
+
+        # Convert equity points to pd.Series for vectorbt UI compatibility if needed
+        # We will pad the curve to match the original index for plotting
+        equity_idx = [pt[0] for pt in equity_curve_points]
+        equity_v = [pt[1] for pt in equity_curve_points]
+        step_series = pd.Series(equity_v, index=equity_idx)
+        # Reindex and forward fill to create a continuous equity curve matching sub_idx
+        # Avoid duplicate index issues
+        step_series = step_series[~step_series.index.duplicated(keep='last')]
+        equity_series = step_series.reindex(sub_idx, method='ffill').fillna(10000.0)
         
         return {
             'trades_count': int(t),
