@@ -204,7 +204,7 @@ with st.sidebar:
         with col_set2:
             min_trades = st.number_input(
                 "최소 검증 거래수", 
-                min_value=10, max_value=500, value=100, step=10,
+                min_value=10, max_value=5000, value=500, step=10,
                 help="OOS 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다."
             )
         
