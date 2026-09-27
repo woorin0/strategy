@@ -313,31 +313,23 @@ if btn_ai_run:
         if is_job_interrupted:
             reset_job_status()
             
-        with st.spinner(f"'{symbol}' ({timeframe}) {start_year}년~현재 데이터 수집 및 백그라운드 워커 기동 중..."):
-            try:
-                df = get_cached_data(symbol, timeframe, start_date=start_date)
-            except Exception as e:
-                st.error(f"❌ 데이터 로드 실패: {symbol} ({timeframe}) 데이터를 가져올 수 없습니다. ({e})")
-                df = None
-                
-            if df is not None:
-                success, msg = start_background_evolution(
-                    df=df,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    max_iterations=ai_iterations,
-                    min_trades=min_trades,
-                    max_mdd=max_mdd,
-                    num_workers=workers_to_use,
-                    webhook_url=webhook_url if use_discord else None,
-                    use_discord=use_discord
-                )
-                if success:
-                    st.success("🚀 백그라운드 유전 진화가 시작되었습니다! 브라우저 창을 닫으셔도 계속 실행됩니다.")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.warning(msg)
+        success, msg = start_background_evolution(
+            symbol=symbol,
+            timeframe=timeframe,
+            max_iterations=ai_iterations,
+            min_trades=min_trades,
+            max_mdd=max_mdd,
+            num_workers=workers_to_use,
+            webhook_url=webhook_url if use_discord else None,
+            use_discord=use_discord,
+            start_date=start_date
+        )
+        if success:
+            st.toast("🚀 백그라운드 유전 진화가 시작되었습니다!")
+            time.sleep(0.3)
+            st.rerun()
+        else:
+            st.warning(msg)
 
 # ----------------- [3. 수동 백테스트 모드 핸들러] -----------------
 if btn_manual_run:
@@ -404,7 +396,7 @@ if btn_manual_run:
 # ----------------- [4. 전략 결과 자동 복원 및 렌더링] -----------------
 # 세션에 활성 전략이 없으면 디스크에서 최신 완료 전략 자동 로드
 active_strat = st.session_state.get("active_strategy")
-if active_strat is None and not is_job_running:
+if active_strat is None:
     latest_saved = get_latest_strategy()
     if latest_saved:
         active_strat = latest_saved
@@ -416,7 +408,7 @@ if active_strat is None and not is_job_running:
             f"(오래 켜두어 화면이 새로고침되거나 브라우저를 다시 열어도 결과가 안전하게 보존됩니다.)"
         )
 
-if active_strat is not None and not is_job_running:
+if active_strat is not None:
     # 텔레메트리 메트릭 5종 카드
     c1, c2, c3, c4, c5 = st.columns(5)
     sh_oos = active_strat.get('oos_sharpe', 0.0)
@@ -510,5 +502,5 @@ if active_strat is not None and not is_job_running:
                     time.sleep(1)
                     st.rerun()
 
-elif not is_job_running:
+else:
     st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 고수익 전략 생성] 버튼을 누르시면, 백그라운드에서 최대 1,000,000회 유전 진화가 시작되며 25%, 50%, 75%, 100% 달성 시 디스코드로 자동 보고됩니다.")

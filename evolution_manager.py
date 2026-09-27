@@ -173,13 +173,16 @@ def _downsample_equity_for_storage(equity_series, max_pts=500):
         s = s.iloc[::step].copy()
     return {str(k): round(float(v), 2) for k, v in s.items()}
 
-def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord):
+def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord, df=None, start_date=None):
     """백그라운드 독립 실행 워커 스레드 (초고속 Numba 머신코드 완주 & 안전 모니터링)"""
     global _cancel_requested
     start_time = time.time()
     notified_milestones = set()
     
-    # 작업 상태 초기화
+    # 작업 상태 초기화 (세대당 최대 1,000개 개체군 청크 기준 세대 수 동적 산정)
+    pop_size = min(max(max_iterations // 10, 20), 1000)
+    calc_total_gen = max(max_iterations // pop_size, 1)
+    
     job_info = {
         "status": "RUNNING",
         "pid": os.getpid(),
@@ -193,7 +196,7 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
         "start_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "progress_pct": 0,
         "generation": 1,
-        "total_generations": 10 if max_iterations >= 500000 else (5 if max_iterations >= 3000 else (4 if max_iterations >= 1000 else (3 if max_iterations >= 200 else 2))),
+        "total_generations": calc_total_gen,
         "completed": 0,
         "total": max_iterations,
         "best_return": 0.0,
@@ -259,6 +262,14 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
                     )
     
     try:
+        # 캔들 데이터 백그라운드 준비 (df가 None이면 비동기 자동 로드)
+        if df is None:
+            from data_manager import get_cached_data
+            job_info["status"] = "RUNNING"
+            job_info["last_heartbeat"] = time.time()
+            update_job_status(job_info)
+            df = get_cached_data(symbol, timeframe, start_date=start_date or "2023-06-01")
+            
         # AI 자율 진화 탐색 실행
         ai_res = run_ai_evolution_search(
             df=df,
@@ -359,10 +370,10 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
         job_info["last_heartbeat"] = time.time()
         update_job_status(job_info)
 
-def start_background_evolution(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord):
+def start_background_evolution(symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord, df=None, start_date="2023-06-01"):
     """
     [무중단 백그라운드 유전 진화 작업 시작]
-    - 기존 작업의 생존 상태를 정확히 검증하고, 중단되었거나 완료된 경우 즉시 새로운 작업 시작
+    - 메인 UI를 멈추지 않고 즉시 0.01초 만에 스레드를 띄워 화면 렌더링을 보장
     """
     global _worker_thread, _cancel_requested
     with _thread_lock:
@@ -373,7 +384,7 @@ def start_background_evolution(df, symbol, timeframe, max_iterations, min_trades
         _cancel_requested = False
         _worker_thread = threading.Thread(
             target=_evolution_worker_task,
-            args=(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord),
+            args=(symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord, df, start_date),
             daemon=True
         )
         _worker_thread.start()

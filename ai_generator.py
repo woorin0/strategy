@@ -517,19 +517,9 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
     # 캔들 배열 1회 사전 변환 (시뮬레이션 반복 시 판다스 오버헤드 0화)
     df_data = precompute_df_arrays(df) if not isinstance(df, dict) else df
     
-    # 세대 수 및 세대별 개체 수 산정
-    if max_iterations >= 500000:
-        n_generations = 10
-    elif max_iterations >= 3000:
-        n_generations = 5
-    elif max_iterations >= 1000:
-        n_generations = 4
-    elif max_iterations >= 200:
-        n_generations = 3
-    else:
-        n_generations = 2
-        
-    pop_size = max(max_iterations // n_generations, 20)
+    # 세대 수 및 세대별 개체 수 산정 (1회 future 생성을 최대 1,000개로 캡핑하여 GIL 락 및 메모리 오버헤드 원천 방지)
+    pop_size = min(max(max_iterations // 10, 20), 1000)
+    n_generations = max(max_iterations // pop_size, 1)
     actual_total = pop_size * n_generations
     
     current_population = [_sample_random_candidate() for _ in range(pop_size)]
@@ -639,6 +629,7 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         # 메모리 정리: 세대 결과 객체 즉시 삭제 및 GC 수거
         del gen_results
         gc.collect()
+        time.sleep(0.005)  # Streamlit 웹 UI 스레드 렌더링을 위해 GIL 양보
 
     if cancel_check and cancel_check():
         raise RuntimeError("사용자에 의해 전략 생성이 중단되었습니다.")
