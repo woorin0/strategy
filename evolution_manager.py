@@ -193,7 +193,7 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
         "start_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "progress_pct": 0,
         "generation": 1,
-        "total_generations": 5 if max_iterations >= 3000 else 4 if max_iterations >= 1000 else 3 if max_iterations >= 200 else 2,
+        "total_generations": 10 if max_iterations >= 500000 else (5 if max_iterations >= 3000 else (4 if max_iterations >= 1000 else (3 if max_iterations >= 200 else 2))),
         "completed": 0,
         "total": max_iterations,
         "best_return": 0.0,

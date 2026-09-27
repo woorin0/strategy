@@ -502,10 +502,10 @@ def _worker_simulate(task_args):
         'sim_res': sim_res
     }
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=10000, min_trades=100, max_mdd=40.0, num_workers=None, progress_callback=None, cancel_check=None):
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=1000000, min_trades=100, max_mdd=40.0, num_workers=None, progress_callback=None, cancel_check=None):
     """
     [다세대 고수익 유전 진화 퀀트 탐색 엔진 (Genetic Evolutionary Algorithm)]
-    - Numba JIT 머신코드 가속 및 경량 메트릭 파이프라인으로 10,000회 탐색을 수십 초 내에 안전 완주
+    - Numba JIT 머신코드 가속 및 경량 메트릭 파이프라인으로 최대 1,000,000회 탐색을 안전하게 완주
     - 메모리 누수 원천 차단(Zero OOM) 및 비정상 중단 방지
     """
     total_cores = os.cpu_count() or 1
@@ -518,7 +518,9 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
     df_data = precompute_df_arrays(df) if not isinstance(df, dict) else df
     
     # 세대 수 및 세대별 개체 수 산정
-    if max_iterations >= 3000:
+    if max_iterations >= 500000:
+        n_generations = 10
+    elif max_iterations >= 3000:
         n_generations = 5
     elif max_iterations >= 1000:
         n_generations = 4

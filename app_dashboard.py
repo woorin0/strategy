@@ -181,21 +181,21 @@ with st.sidebar:
         st.markdown("### 2. 🧬 AI 다세대 유전 진화 설정")
         preset = st.radio(
             "탐색 강도 프리셋",
-            ["⚡ 빠른 스캔 (1,000회)", "🔬 심층 퀀트 진화 (3,000회)", "🔥 울트라 고수익 진화 (5,000회)", "🚀 극한 알파 탐색 (10,000회 / 기본값)", "🎛️ 직접 설정"],
+            ["⚡ 빠른 스캔 (10,000회)", "🔬 심층 퀀트 진화 (50,000회)", "🔥 울트라 고수익 진화 (200,000회)", "🚀 극한 알파 탐색 (1,000,000회 / 기본값)", "🎛️ 직접 설정"],
             index=3,
             help="심층 진화일수록 다세대(Multi-Generation) 교차 및 돌연변이를 거쳐 초고수익/고승률과 리스크 통제를 동시에 달성합니다."
         )
         
-        if "1,000회" in preset:
-            ai_iterations = 1000
-        elif "3,000회" in preset:
-            ai_iterations = 3000
-        elif "5,000회" in preset:
-            ai_iterations = 5000
-        elif "10,000회" in preset:
+        if "10,000회" in preset:
             ai_iterations = 10000
+        elif "50,000회" in preset:
+            ai_iterations = 50000
+        elif "200,000회" in preset:
+            ai_iterations = 200000
+        elif "1,000,000회" in preset:
+            ai_iterations = 1000000
         else:
-            ai_iterations = st.number_input("탐색 개체 수 (Iterations)", min_value=100, max_value=50000, value=10000, step=1000)
+            ai_iterations = st.number_input("탐색 개체 수 (Iterations)", min_value=100, max_value=1000000, value=1000000, step=10000)
             
         col_set1, col_set2 = st.columns(2)
         with col_set1:
@@ -511,4 +511,4 @@ if active_strat is not None and not is_job_running:
                     st.rerun()
 
 elif not is_job_running:
-    st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 고수익 전략 생성] 버튼을 누르시면, 백그라운드에서 10,000회 유전 진화가 시작되며 25%, 50%, 75%, 100% 달성 시 디스코드로 자동 보고됩니다.")
+    st.info("👈 좌측 사이드바에서 [🤖 AI 심층 진화 & 고수익 전략 생성] 버튼을 누르시면, 백그라운드에서 최대 1,000,000회 유전 진화가 시작되며 25%, 50%, 75%, 100% 달성 시 디스코드로 자동 보고됩니다.")
