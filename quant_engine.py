@@ -15,7 +15,6 @@ try:
 except Exception:
     pass
 
-import vectorbt as vbt
 from numba import njit
 
 # Numba JIT ATR (Pine Script ta.atr RMA 완벽 재현)

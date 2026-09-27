@@ -20,6 +20,7 @@ except Exception:
     pass
 
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from data_manager import get_cached_data
 from quant_engine import run_simulation
 from report_exporter import export_backtest_to_excel
@@ -263,8 +264,7 @@ if is_job_running:
     > **25%, 50%, 75%, 100%** 달성 시마다 디스코드로 리포트가 자동 전송되며, 완료 후 언제 접속하셔도 완성된 전략 코드가 화면에 즉시 복원됩니다.
     """)
     st.progress(pct / 100.0)
-    time.sleep(2)
-    st.rerun()
+    st_autorefresh(interval=2000, key='job_refresh')
 
 # ----------------- [2. AI 자율 생성 버튼 핸들러 (백그라운드 시작)] -----------------
 if btn_ai_run:
