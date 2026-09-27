@@ -2,9 +2,9 @@
 // 🤖 AI Deep Quantum Evolutionary Strategy Generator v6.0
 // [AI Engine Report]
 // - Symbol: BTC/USDT (1h)
-// - OOS Sharpe: -0.111 | OOS Return: -2.74%
-// - OOS MDD: -17.33% | OOS Win Rate: 36.76%
-// - OOS Trades: 68 trades (Statistically Significant Sample)
+// - OOS Sharpe: 4.866 | OOS Return: 384.66%
+// - OOS MDD: 4.31% | OOS Win Rate: 55.7%
+// - OOS Trades: 149 trades (Statistically Significant Sample)
 strategy("AI Deep-Evolved BTCUSDT 1h Strategy v6", 
          overlay=true, 
          initial_capital=10000, 
@@ -18,31 +18,31 @@ strategy("AI Deep-Evolved BTCUSDT 1h Strategy v6",
 // 1. INPUT PARAMETERS (AI Optimized Parameters)
 // ==========================================
 group_st = "1. SuperTrend Engine"
-st_period = input.int(20, "SuperTrend ATR Period", minval=1, group=group_st)
-st_mult   = input.float(4.0, "SuperTrend Factor/Multiplier", minval=0.1, step=0.1, group=group_st)
+st_period = input.int(12, "SuperTrend ATR Period", minval=1, group=group_st)
+st_mult   = input.float(3.5, "SuperTrend Factor/Multiplier", minval=0.1, step=0.1, group=group_st)
 
 group_filter = "2. Macro Regime & Volatility Filter"
-use_ema_filter = input.bool(false, "Use Macro Trend EMA Filter", group=group_filter)
-ema_len        = input.int(100, "Macro EMA Length", minval=10, group=group_filter)
+use_ema_filter = input.bool(true, "Use Macro Trend EMA Filter", group=group_filter)
+ema_len        = input.int(50, "Macro EMA Length", minval=10, group=group_filter)
 use_min_volat  = input.bool(false, "Use Min Width (Volatility Filter)", group=group_filter)
-min_width_pct  = input.float(1.0, "Min Volatility Width (%)", minval=0.0, step=0.1, group=group_filter)
+min_width_pct  = input.float(2.0, "Min Volatility Width (%)", minval=0.0, step=0.1, group=group_filter)
 
 group_sqz = "3. Squeeze Momentum (LazyBear)"
-use_squeeze = input.bool(false, "Enable Squeeze Momentum Filter", group=group_sqz)
+use_squeeze = input.bool(true, "Enable Squeeze Momentum Filter", group=group_sqz)
 sqz_len     = input.int(25, "Squeeze Length", minval=5, group=group_sqz)
-bb_mult     = input.float(2.0, "BB StdDev Multiplier", minval=0.5, step=0.1, group=group_sqz)
-kc_mult     = input.float(1.5, "KC ATR Multiplier", minval=0.5, step=0.1, group=group_sqz)
+bb_mult     = input.float(2.5, "BB StdDev Multiplier", minval=0.5, step=0.1, group=group_sqz)
+kc_mult     = input.float(2.0, "KC ATR Multiplier", minval=0.5, step=0.1, group=group_sqz)
 
 group_smc = "4. Smart Money Concepts (SMC)"
 use_smc       = input.bool(false, "Enable Smart Money Concepts Filter", group=group_smc)
 smc_swing_len = input.int(7, "SMC Swing Length (Pivot)", minval=2, group=group_smc)
-smc_mode      = input.string("Structure", "SMC Validation Mode", options=["Structure", "FVG", "Both"], group=group_smc)
+smc_mode      = input.string("Both", "SMC Validation Mode", options=["Structure", "FVG", "Both"], group=group_smc)
 
 group_rsi = "5. RSI (Relative Strength Index) Filter"
-use_rsi_filter = input.bool(true, "Enable RSI Filter", group=group_rsi)
-rsi_len        = input.int(9, "RSI Length", minval=1, group=group_rsi)
+use_rsi_filter = input.bool(false, "Enable RSI Filter", group=group_rsi)
+rsi_len        = input.int(7, "RSI Length", minval=1, group=group_rsi)
 rsi_mode       = input.string("Boundary", "RSI Filter Mode", options=["Boundary", "Momentum"], group=group_rsi)
-rsi_ob         = input.float(80.0, "Overbought Level (Max for Long)", minval=50.0, maxval=95.0, group=group_rsi)
+rsi_ob         = input.float(70.0, "Overbought Level (Max for Long)", minval=50.0, maxval=95.0, group=group_rsi)
 rsi_os         = input.float(35.0, "Oversold Level (Min for Short)", minval=5.0, maxval=50.0, group=group_rsi)
 
 group_adx = "6. ADX (Trend Strength) Filter"
@@ -52,8 +52,8 @@ adx_threshold  = input.float(25.0, "Min ADX Trend Strength", minval=5.0, step=1.
 
 group_vol = "7. Volume Confirmation Filter"
 use_vol_filter = input.bool(false, "Enable Volume MA Filter", group=group_vol)
-vol_ma_len     = input.int(20, "Volume MA Length", minval=1, group=group_vol)
-vol_mult       = input.float(1.2, "Volume Multiplier", minval=0.5, step=0.1, group=group_vol)
+vol_ma_len     = input.int(30, "Volume MA Length", minval=1, group=group_vol)
+vol_mult       = input.float(1.0, "Volume Multiplier", minval=0.5, step=0.1, group=group_vol)
 
 group_trma = "8. Trend Reversal MA (TR MA Emergency Exit)"
 use_tr_exit  = input.bool(true, "Enable TR MA Exit", group=group_trma)
@@ -61,15 +61,15 @@ tr_ma_type   = input.string("EMA", "TR MA Type", options=["SMA", "EMA", "RMA", "
 tr_ma_len    = input.int(50, "TR MA Length", minval=10, group=group_trma)
 
 group_tpsl = "9. Hybrid Take Profit & Stop Loss"
-tp_mode      = input.string("ATR", "TP Price Mode", options=["None", "Fixed", "ATR", "Both"], group=group_tpsl)
+tp_mode      = input.string("Both", "TP Price Mode", options=["None", "Fixed", "ATR", "Both"], group=group_tpsl)
 sl_mode      = input.string("Fixed", "SL Price Mode", options=["None", "Fixed", "ATR", "Both"], group=group_tpsl)
 tp_fixed_pct = input.float(80.0, "Fixed Take Profit (%)", minval=0.1, step=0.1, group=group_tpsl)
-sl_fixed_pct = input.float(2.0, "Fixed Stop Loss (%)", minval=0.1, step=0.1, group=group_tpsl)
-tp_atr_mult  = input.float(4.0, "TP ATR Multiplier", minval=0.5, step=0.1, group=group_tpsl)
+sl_fixed_pct = input.float(4.0, "Fixed Stop Loss (%)", minval=0.1, step=0.1, group=group_tpsl)
+tp_atr_mult  = input.float(6.0, "TP ATR Multiplier", minval=0.5, step=0.1, group=group_tpsl)
 sl_atr_mult  = input.float(2.5, "SL ATR Multiplier", minval=0.5, step=0.1, group=group_tpsl)
 
 group_time = "10. Time Expiry Exit"
-use_time_exit = input.bool(true, "Enable Time Expiry Exit", group=group_time)
+use_time_exit = input.bool(false, "Enable Time Expiry Exit", group=group_time)
 max_bars_hold = input.int(720, "Max Holding Bars (Hours)", minval=1, group=group_time)
 
 // ==========================================

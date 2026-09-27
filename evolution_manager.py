@@ -15,19 +15,70 @@ LATEST_STRATEGY_FILE = os.path.join(RESULTS_DIR, "latest_strategy.json")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
-# 전역 백그라운드 스레드 락 및 상태
+# 전역 백그라운드 스레드 및 취소 제어 락
 _worker_thread = None
 _thread_lock = threading.Lock()
+_cancel_requested = False
+
+def is_process_running(pid):
+    """지정된 PID가 현재 시스템에서 실제로 살아있는지 확인"""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        # Windows / Linux 공통 안전 검사
+        if os.name == 'nt':
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            SYNCHRONIZE = 0x00100000
+            process = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if process:
+                kernel32.CloseHandle(process)
+                return True
+            return False
+        else:
+            # POSIX kill -0
+            os.kill(pid, 0)
+            return True
+    except Exception:
+        return False
 
 def get_job_status():
-    """현재 백그라운드 유전 진화 작업 상태 조회"""
+    """
+    현재 백그라운드 유전 진화 작업 상태 조회
+    - 좀비 상태(메모리 부족, 서버 재시작 등으로 스레드가 죽었으나 RUNNING으로 남아있는 경우) 자동 감지하여 INTERRUPTED 전환
+    """
+    global _worker_thread
     if not os.path.exists(STATUS_FILE):
         return {"status": "IDLE"}
     try:
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return {"status": "IDLE"}
+
+    # 상태가 RUNNING인 경우 생존성 검증
+    if data.get("status") == "RUNNING":
+        now = time.time()
+        last_hb = data.get("last_heartbeat", 0)
+        task_pid = data.get("pid")
+        my_pid = os.getpid()
+
+        # 1. 동일 프로세스 내인데 스레드가 이미 죽어있는 경우
+        if task_pid == my_pid:
+            if _worker_thread is not None and not _worker_thread.is_alive():
+                data["status"] = "INTERRUPTED"
+                data["error_message"] = "작업 스레드가 예기치 않게 종료되었습니다."
+                update_job_status(data)
+                return data
+
+        # 2. 다른 프로세스인데 PID가 죽었거나, 45초 이상 Heartbeat 업데이트가 없는 경우
+        if (task_pid and task_pid != my_pid and not is_process_running(task_pid)) or (last_hb > 0 and (now - last_hb) > 45.0):
+            data["status"] = "INTERRUPTED"
+            data["error_message"] = "서버 재시작 또는 메모리 부족(OOM)으로 인해 작업이 중단되었습니다."
+            update_job_status(data)
+            return data
+
+    return data
 
 def update_job_status(data):
     """현재 백그라운드 작업 상태 파일 저장"""
@@ -36,6 +87,31 @@ def update_job_status(data):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[Status Update Error] {e}")
+
+def stop_background_evolution():
+    """실행 중인 유전 진화 작업 즉시 강제 중단"""
+    global _cancel_requested
+    _cancel_requested = True
+    job_info = get_job_status()
+    if job_info.get("status") == "RUNNING":
+        job_info["status"] = "INTERRUPTED"
+        job_info["error_message"] = "사용자에 의해 작업이 강제 중단되었습니다."
+        update_job_status(job_info)
+    return True, "유전 진화 작업 중단 신호를 전송했습니다."
+
+def reset_job_status():
+    """멈추거나 실패한 작업 상태를 완전히 클리어하고 IDLE로 리셋"""
+    global _cancel_requested, _worker_thread
+    _cancel_requested = True
+    _worker_thread = None
+    idle_info = {
+        "status": "IDLE",
+        "progress_pct": 0,
+        "elapsed_sec": 0,
+        "message": "작업 상태가 초기화되었습니다."
+    }
+    update_job_status(idle_info)
+    return True, "작업 상태가 성공적으로 초기화되었습니다."
 
 def get_latest_strategy():
     """가장 최근에 완료된 전략 결과 및 코드 로드 (자동 복원용)"""
@@ -95,17 +171,19 @@ def _downsample_equity_for_storage(equity_series, max_pts=500):
     if len(s) > max_pts:
         step = max(1, len(s) // max_pts)
         s = s.iloc[::step].copy()
-    # str(index) -> float 변환
     return {str(k): round(float(v), 2) for k, v in s.items()}
 
 def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord):
-    """백그라운드 독립 실행 워커 스레드 (브라우저가 꺼져도 서버에서 100% 완주)"""
+    """백그라운드 독립 실행 워커 스레드 (초고속 Numba 머신코드 완주 & 안전 모니터링)"""
+    global _cancel_requested
     start_time = time.time()
     notified_milestones = set()
     
     # 작업 상태 초기화
     job_info = {
         "status": "RUNNING",
+        "pid": os.getpid(),
+        "last_heartbeat": time.time(),
         "symbol": symbol,
         "timeframe": timeframe,
         "max_iterations": max_iterations,
@@ -131,6 +209,7 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
         elapsed = time.time() - start_time
         job_info["progress_pct"] = pct
         job_info["elapsed_sec"] = round(elapsed, 1)
+        job_info["last_heartbeat"] = time.time()
         
         # 메시지에서 세대 및 최고 성과 파싱 보정
         try:
@@ -189,7 +268,8 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
             min_trades=min_trades,
             max_mdd=max_mdd,
             num_workers=num_workers,
-            progress_callback=on_progress
+            progress_callback=on_progress,
+            cancel_check=lambda: _cancel_requested
         )
         
         elapsed_sec = round(time.time() - start_time, 2)
@@ -226,14 +306,14 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
             "pine_code": pine_code,
             "oos_equity": _downsample_equity_for_storage(best_sim["oos"].get("equity")),
             "is_equity": _downsample_equity_for_storage(best_sim["is"].get("equity")),
-            "raw_trades": best_sim["oos"].get("trades", [])[:100] # 최근 100개 거래 기록
+            "raw_trades": best_sim["oos"].get("trades", [])[:100]
         }
         
-        # 1) results/latest_strategy.json 에 저장 (세션 복원용)
+        # 1) results/latest_strategy.json 저장 (세션 복원용)
         with open(LATEST_STRATEGY_FILE, "w", encoding="utf-8") as f:
             json.dump(strategy_record, f, ensure_ascii=False, indent=2)
             
-        # 2) results/strategy_history/ 폴더에 영구 아카이빙 (.json 및 .pine)
+        # 2) results/strategy_history/ 영구 아카이빙 (.json 및 .pine)
         hist_json = os.path.join(HISTORY_DIR, f"strategy_{clean_sym}_{timeframe}_{time_tag}.json")
         with open(hist_json, "w", encoding="utf-8") as f:
             json.dump(strategy_record, f, ensure_ascii=False, indent=2)
@@ -256,6 +336,7 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
         job_info["best_win_rate"] = best_sim["oos"]["win_rate"]
         job_info["best_mdd"] = best_sim["oos"]["mdd"]
         job_info["best_trades"] = best_sim["oos"]["trades_count"]
+        job_info["last_heartbeat"] = time.time()
         update_job_status(job_info)
         
         # 5) 🔔 100% 완료 디스코드 웹훅 발송
@@ -273,21 +354,23 @@ def _evolution_worker_task(df, symbol, timeframe, max_iterations, min_trades, ma
             
     except Exception as e:
         print(f"[Evolution Task Error] {e}")
-        job_info["status"] = "ERROR"
+        job_info["status"] = "ERROR" if not _cancel_requested else "INTERRUPTED"
         job_info["error_message"] = str(e)
+        job_info["last_heartbeat"] = time.time()
         update_job_status(job_info)
 
 def start_background_evolution(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord):
     """
-    [핵심: 무중단 백그라운드 작업 시작]
-    Streamlit 세션에 종속되지 않는 독립 데몬 스레드로 실행
+    [무중단 백그라운드 유전 진화 작업 시작]
+    - 기존 작업의 생존 상태를 정확히 검증하고, 중단되었거나 완료된 경우 즉시 새로운 작업 시작
     """
-    global _worker_thread
+    global _worker_thread, _cancel_requested
     with _thread_lock:
         curr_status = get_job_status()
         if curr_status.get("status") == "RUNNING":
             return False, "이미 백그라운드에서 전략 생성이 가동 중입니다."
             
+        _cancel_requested = False
         _worker_thread = threading.Thread(
             target=_evolution_worker_task,
             args=(df, symbol, timeframe, max_iterations, min_trades, max_mdd, num_workers, webhook_url, use_discord),

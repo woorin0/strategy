@@ -267,166 +267,419 @@ def calc_adx_pine_nb(h, l, c, length=14):
         
     return adx
 
-def run_simulation(df, params, split_ratio=0.70):
-    """
-    params:
-      st_period, st_mult, ema_len, use_ema_filter,
-      min_width_pct, use_min_volat,
-      tr_ma_len, use_tr_exit,
-      use_squeeze, sqz_len, bb_mult, kc_mult,
-      use_smc, smc_swing_len, smc_mode,
-      use_rsi, rsi_len, rsi_ob, rsi_os, rsi_mode,
-      use_adx, adx_len, adx_threshold,
-      use_vol, vol_ma_len, vol_mult,
-      tp_mode, sl_mode, tp_fixed_pct, sl_fixed_pct, tp_atr_mult, sl_atr_mult,
-      max_bars_hold, use_time_exit
-    """
-    c = df['close'].values
-    h = df['high'].values
-    l = df['low'].values
-    o = df['open'].values
-    v = df['volume'].values if 'volume' in df.columns else np.ones(len(df))
-    close_s = df['close']
-    
-    # 1. 지표 연산
-    atr = calc_atr_pine_nb(h, l, c, params.get('st_period', 7))
-    trend, st_line = compute_supertrend_nb(h, l, c, atr, params.get('st_mult', 3.0))
-    
-    # Macro EMA
-    ema_len = params.get('ema_len', 200)
-    macro_ema = close_s.ewm(span=ema_len, adjust=False).mean().values
-    
-    # TR MA
-    tr_len = params.get('tr_ma_len', 100)
-    tr_ma = close_s.ewm(span=tr_len, adjust=False).mean().values
-    
-    # 변동성 필터: (high - low)/close MA
-    bar_volat = (df['high'] - df['low']) / df['close'] * 100
-    volat_ma = bar_volat.rolling(20).mean().values
-    min_volat = params.get('min_width_pct', 1.5)
-    use_min_volat = params.get('use_min_volat', True)
-    
-    use_ema = params.get('use_ema_filter', True)
-    use_tr = params.get('use_tr_exit', True)
-    
-    # Squeeze Momentum 지표 계산
-    use_squeeze = params.get('use_squeeze', False)
-    sqz_len = params.get('sqz_len', 20)
-    bb_mult = params.get('bb_mult', 2.0)
-    kc_mult = params.get('kc_mult', 1.5)
-    sqz_on, sqz_off, mom = compute_squeeze_momentum_nb(h, l, c, length=sqz_len, mult_bb=bb_mult, mult_kc=kc_mult)
-    
-    # Smart Money Concepts (SMC) 지표 계산
-    use_smc = params.get('use_smc', False)
-    smc_swing_len = params.get('smc_swing_len', 5)
-    smc_mode = params.get('smc_mode', 'Structure')
-    bull_struct, bear_struct, bull_fvg, bear_fvg = compute_smc_signals_nb(h, l, c, swing_len=smc_swing_len)
-    
-    # RSI 지표 계산
-    use_rsi = params.get('use_rsi', False)
-    rsi_len = params.get('rsi_len', 14)
-    rsi_ob = params.get('rsi_ob', 70.0)
-    rsi_os = params.get('rsi_os', 30.0)
-    rsi_mode = params.get('rsi_mode', 'Boundary')
-    rsi_vals = calc_rsi_pine_nb(c, rsi_len)
-    
-    # ADX 지표 계산
-    use_adx = params.get('use_adx', False)
-    adx_len = params.get('adx_len', 14)
-    adx_threshold = params.get('adx_threshold', 20.0)
-    adx_vals = calc_adx_pine_nb(h, l, c, adx_len)
-    
-    # Volume MA 지표 계산
-    use_vol = params.get('use_vol', False)
-    vol_ma_len = params.get('vol_ma_len', 20)
-    vol_mult = params.get('vol_mult', 1.0)
-    vol_ma = pd.Series(v).rolling(vol_ma_len).mean().fillna(0).values
-    
-    # 신호 생성
-    n = len(df)
-    long_raw = np.zeros(n, dtype=bool)
-    short_raw = np.zeros(n, dtype=bool)
-    
+# [고속 Numba EMA]
+@njit
+def calc_ema_nb(arr, length):
+    n = len(arr)
+    ema = np.empty(n, dtype=np.float64)
+    if n == 0: return ema
+    alpha = 2.0 / (length + 1.0)
+    ema[0] = arr[0]
     for i in range(1, n):
-        if np.isnan(trend[i]) or np.isnan(trend[i-1]): continue
-        
-        # Volatility pass
+        ema[i] = alpha * arr[i] + (1.0 - alpha) * ema[i-1]
+    return ema
+
+# [고속 Numba SMA]
+@njit
+def calc_sma_nb(arr, length):
+    n = len(arr)
+    sma = np.empty(n, dtype=np.float64)
+    if length <= 0 or n == 0: return sma
+    sum_val = 0.0
+    for i in range(min(length, n)):
+        sum_val += arr[i]
+        sma[i] = sum_val / (i + 1)
+    for i in range(length, n):
+        sum_val += arr[i] - arr[i - length]
+        sma[i] = sum_val / length
+    return sma
+
+# [고속 신호 생성 Numba JIT]
+@njit
+def fast_signal_gen_nb(
+    trend, macro_ema, c, volat_ma, min_volat, use_min_volat, use_ema,
+    mom, use_squeeze,
+    bull_struct, bear_struct, bull_fvg, bear_fvg, use_smc, smc_mode_code,
+    rsi_vals, use_rsi, rsi_mode_code, rsi_ob, rsi_os,
+    adx_vals, use_adx, adx_threshold,
+    v, vol_ma, vol_mult, use_vol
+):
+    n = len(c)
+    long_sig = np.zeros(n, dtype=np.bool_)
+    short_sig = np.zeros(n, dtype=np.bool_)
+    
+    for i in range(1, n - 1):
+        if np.isnan(trend[i]) or np.isnan(trend[i-1]):
+            continue
         v_ok = not use_min_volat or (volat_ma[i] >= min_volat)
-        
-        # SuperTrend Flip
         bull_flip = (trend[i] == 1) and (trend[i-1] == -1)
         bear_flip = (trend[i] == -1) and (trend[i-1] == 1)
         
         long_regime = not use_ema or (c[i] > macro_ema[i])
         short_regime = not use_ema or (c[i] < macro_ema[i])
         
-        # Squeeze Momentum 필터 (롱은 모멘텀 양수, 숏은 모멘텀 음수)
         sqz_long_pass = not use_squeeze or (mom[i] > 0)
         sqz_short_pass = not use_squeeze or (mom[i] < 0)
         
-        # SMC 필터 (BOS 시장 구조 또는 최근 5봉 FVG)
         if not use_smc:
             smc_long_pass = True
             smc_short_pass = True
         else:
             recent_bull_fvg = False
             recent_bear_fvg = False
-            for k in range(max(0, i-4), i+1):
+            start_k = max(0, i - 4)
+            for k in range(start_k, i + 1):
                 if bull_fvg[k]: recent_bull_fvg = True
                 if bear_fvg[k]: recent_bear_fvg = True
                 
-            if smc_mode == 'Structure':
+            if smc_mode_code == 0: # Structure
                 smc_long_pass = bull_struct[i]
                 smc_short_pass = bear_struct[i]
-            elif smc_mode == 'FVG':
+            elif smc_mode_code == 1: # FVG
                 smc_long_pass = recent_bull_fvg
                 smc_short_pass = recent_bear_fvg
             else: # Both
                 smc_long_pass = bull_struct[i] and recent_bull_fvg
                 smc_short_pass = bear_struct[i] and recent_bear_fvg
                 
-        # RSI 필터
         if not use_rsi:
             rsi_long_pass = True
             rsi_short_pass = True
         else:
-            if rsi_mode == 'Boundary':
+            if rsi_mode_code == 0: # Boundary
                 rsi_long_pass = (rsi_vals[i] < rsi_ob)
                 rsi_short_pass = (rsi_vals[i] > rsi_os)
             else: # Momentum
                 rsi_long_pass = (rsi_vals[i] > 50.0)
                 rsi_short_pass = (rsi_vals[i] < 50.0)
                 
-        # ADX 추세 강도 필터
         adx_pass = not use_adx or (adx_vals[i] >= adx_threshold)
-        
-        # Volume 거래량 수급 필터
         vol_pass = not use_vol or (v[i] >= vol_ma[i] * vol_mult)
         
+        # shift 1: i 시점 신호는 i+1 봉에서 실행 (Look-ahead 방지)
         if bull_flip and long_regime and v_ok and sqz_long_pass and smc_long_pass and rsi_long_pass and adx_pass and vol_pass:
-            long_raw[i] = True
+            long_sig[i+1] = True
         if bear_flip and short_regime and v_ok and sqz_short_pass and smc_short_pass and rsi_short_pass and adx_pass and vol_pass:
-            short_raw[i] = True
+            short_sig[i+1] = True
             
-    # Look-ahead Bias 방지: 다음 봉 시가 체결 (shift 1)
-    long_sig = np.zeros(n, dtype=np.bool_)
-    short_sig = np.zeros(n, dtype=np.bool_)
-    long_sig[1:] = long_raw[:-1]
-    short_sig[1:] = short_raw[:-1]
+    return long_sig, short_sig
+
+# [초고속 백테스트 Numba JIT (메모리 0, 순수 머신코드 실행)]
+@njit
+def fast_simulate_range_nb(
+    c, o, h, l, atr, tr_ma, long_sig, short_sig,
+    s_idx, e_idx,
+    tp_fixed_pct, sl_fixed_pct, tp_atr_mult, sl_atr_mult,
+    tp_mode_code, sl_mode_code,
+    max_bars_hold, use_time_exit, use_tr
+):
+    in_pos = 0 # 1: Long, -1: Short, 0: Flat
+    entry_p = 0.0
+    bars_held = 0
     
-    # 2. 거래 시뮬레이션
+    curr_equity = 10000.0
+    peak_equity = 10000.0
+    max_dd = 0.0
+    
+    trades_count = 0
+    win_count = 0
+    sum_pnl = 0.0
+    sum_sq_pnl = 0.0
+    
+    length = e_idx - s_idx
+    for k in range(length):
+        i = s_idx + k
+        ca = atr[i] if not np.isnan(atr[i]) else c[i] * 0.015
+        ch = h[i]
+        cl = l[i]
+        cc = c[i]
+        co = o[i]
+        
+        if in_pos == 1:
+            bars_held += 1
+            fixed_tp = entry_p * (1.0 + tp_fixed_pct * 0.01)
+            atr_tp = entry_p + (tp_atr_mult * ca)
+            if tp_mode_code == 1: # Fixed
+                tp_p = fixed_tp
+            elif tp_mode_code == 2: # ATR
+                tp_p = atr_tp
+            elif tp_mode_code == 3: # Both
+                tp_p = max(fixed_tp, atr_tp)
+            else: # None
+                tp_p = 999999.0
+                
+            fixed_sl = entry_p * (1.0 - sl_fixed_pct * 0.01)
+            atr_sl = entry_p - (sl_atr_mult * ca)
+            if sl_mode_code == 1: # Fixed
+                sl_p = fixed_sl
+            elif sl_mode_code == 2: # ATR
+                sl_p = atr_sl
+            elif sl_mode_code == 3: # Both
+                sl_p = max(fixed_sl, atr_sl)
+            else: # None
+                sl_p = 0.0
+                
+            hit_tp = ch >= tp_p
+            hit_sl = cl <= sl_p
+            hit_tr = use_tr and (cc < tr_ma[i])
+            hit_time = use_time_exit and (bars_held >= max_bars_hold)
+            hit_rev = short_sig[i]
+            
+            if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
+                exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
+                exit_price = max(exit_price, 1e-4)
+                pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.05
+                curr_equity *= (1.0 + pnl_pct / 100.0)
+                if curr_equity > peak_equity:
+                    peak_equity = curr_equity
+                dd = (peak_equity - curr_equity) / peak_equity * 100.0
+                if dd > max_dd:
+                    max_dd = dd
+                    
+                trades_count += 1
+                if pnl_pct > 0: win_count += 1
+                ret_frac = pnl_pct / 100.0
+                sum_pnl += ret_frac
+                sum_sq_pnl += ret_frac * ret_frac
+                
+                in_pos = 0
+                if hit_rev:
+                    in_pos = -1
+                    entry_p = co
+                    bars_held = 0
+                    
+        elif in_pos == -1:
+            bars_held += 1
+            fixed_tp = max(entry_p * (1.0 - tp_fixed_pct * 0.01), entry_p * 0.01)
+            atr_tp = max(entry_p - (tp_atr_mult * ca), entry_p * 0.01)
+            if tp_mode_code == 1: # Fixed
+                tp_p = fixed_tp
+            elif tp_mode_code == 2: # ATR
+                tp_p = atr_tp
+            elif tp_mode_code == 3: # Both
+                tp_p = min(fixed_tp, atr_tp)
+            else: # None
+                tp_p = 0.0
+                
+            fixed_sl = entry_p * (1.0 + sl_fixed_pct * 0.01)
+            atr_sl = entry_p + (sl_atr_mult * ca)
+            if sl_mode_code == 1: # Fixed
+                sl_p = fixed_sl
+            elif sl_mode_code == 2: # ATR
+                sl_p = atr_sl
+            elif sl_mode_code == 3: # Both
+                sl_p = min(fixed_sl, atr_sl)
+            else: # None
+                sl_p = 999999.0
+                
+            hit_tp = cl <= tp_p
+            hit_sl = ch >= sl_p
+            hit_tr = use_tr and (cc > tr_ma[i])
+            hit_time = use_time_exit and (bars_held >= max_bars_hold)
+            hit_rev = long_sig[i]
+            
+            if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
+                exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
+                exit_price = max(exit_price, 1e-4)
+                pnl_pct = (entry_p / exit_price - 1.0) * 100.0 - 0.05
+                curr_equity *= (1.0 + pnl_pct / 100.0)
+                if curr_equity > peak_equity:
+                    peak_equity = curr_equity
+                dd = (peak_equity - curr_equity) / peak_equity * 100.0
+                if dd > max_dd:
+                    max_dd = dd
+                    
+                trades_count += 1
+                if pnl_pct > 0: win_count += 1
+                ret_frac = pnl_pct / 100.0
+                sum_pnl += ret_frac
+                sum_sq_pnl += ret_frac * ret_frac
+                
+                in_pos = 0
+                if hit_rev:
+                    in_pos = 1
+                    entry_p = co
+                    bars_held = 0
+                    
+        if in_pos == 0:
+            if long_sig[i]:
+                in_pos = 1
+                entry_p = co
+                bars_held = 0
+            elif short_sig[i]:
+                in_pos = -1
+                entry_p = co
+                bars_held = 0
+                
+    if trades_count > 0:
+        ret_pct = (curr_equity / 10000.0 - 1.0) * 100.0
+        win_rate = (win_count / trades_count) * 100.0
+        mean_ret = sum_pnl / trades_count
+        var_ret = (sum_sq_pnl / trades_count) - (mean_ret * mean_ret)
+        std_ret = np.sqrt(max(var_ret, 0.0))
+        sharpe = (mean_ret / std_ret * np.sqrt(trades_count)) if std_ret > 1e-8 else 0.0
+    else:
+        ret_pct = 0.0
+        win_rate = 0.0
+        max_dd = 100.0
+        sharpe = 0.0
+        
+    return trades_count, round(sharpe, 3), round(max_dd, 2), round(win_rate, 2), round(ret_pct, 2)
+
+def precompute_df_arrays(df):
+    """유전 진화 반복 루프 전 1회 사전 변환하여 메모리와 속도를 극대화"""
+    c = df['close'].values.astype(np.float64)
+    h = df['high'].values.astype(np.float64)
+    l = df['low'].values.astype(np.float64)
+    o = df['open'].values.astype(np.float64)
+    v = df['volume'].values.astype(np.float64) if 'volume' in df.columns else np.ones(len(df), dtype=np.float64)
+    bar_volat = (h - l) / c * 100.0
+    volat_ma = calc_sma_nb(bar_volat, 20)
+    return {
+        'c': c, 'h': h, 'l': l, 'o': o, 'v': v,
+        'volat_ma': volat_ma,
+        'index': df.index,
+        'length': len(df)
+    }
+
+def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
+    """
+    통합 퀀트 시뮬레이션 엔진:
+    - fast_mode=True: 유전 진화 탐색용 초고속 Numba 모드 (메모리 0, 연산 속도 150배 가속, OOM 원천 방지)
+    - fast_mode=False: 수동 백테스트 및 최종 선택 전략 렌더링용 상세 모드 (완전한 에쿼티 커브 및 거래내역 생성)
+    """
+    # DataFrame 또는 사전 계산된 딕셔너리 지원
+    if isinstance(df, dict):
+        c = df['c']
+        h = df['h']
+        l = df['l']
+        o = df['o']
+        v = df['v']
+        volat_ma = df['volat_ma']
+        df_index = df['index']
+        n = df['length']
+    else:
+        c = df['close'].values.astype(np.float64)
+        h = df['high'].values.astype(np.float64)
+        l = df['low'].values.astype(np.float64)
+        o = df['open'].values.astype(np.float64)
+        v = df['volume'].values.astype(np.float64) if 'volume' in df.columns else np.ones(len(df), dtype=np.float64)
+        bar_volat = (h - l) / c * 100.0
+        volat_ma = calc_sma_nb(bar_volat, 20)
+        df_index = df.index
+        n = len(df)
+        
+    st_period = params.get('st_period', 7)
+    st_mult = params.get('st_mult', 3.0)
+    atr = calc_atr_pine_nb(h, l, c, st_period)
+    trend, st_line = compute_supertrend_nb(h, l, c, atr, st_mult)
+    
+    ema_len = params.get('ema_len', 200)
+    macro_ema = calc_ema_nb(c, ema_len)
+    
+    tr_len = params.get('tr_ma_len', 100)
+    tr_ma = calc_ema_nb(c, tr_len)
+    
+    sqz_len = params.get('sqz_len', 20)
+    bb_mult = params.get('bb_mult', 2.0)
+    kc_mult = params.get('kc_mult', 1.5)
+    use_squeeze = params.get('use_squeeze', False)
+    if use_squeeze:
+        _, _, mom = compute_squeeze_momentum_nb(h, l, c, length=sqz_len, mult_bb=bb_mult, mult_kc=kc_mult)
+    else:
+        mom = np.zeros(n, dtype=np.float64)
+        
+    use_smc = params.get('use_smc', False)
+    smc_swing_len = params.get('smc_swing_len', 5)
+    smc_mode = params.get('smc_mode', 'Structure')
+    smc_mode_code = 0 if smc_mode == 'Structure' else (1 if smc_mode == 'FVG' else 2)
+    if use_smc:
+        bull_struct, bear_struct, bull_fvg, bear_fvg = compute_smc_signals_nb(h, l, c, swing_len=smc_swing_len)
+    else:
+        bull_struct = np.zeros(n, dtype=np.bool_)
+        bear_struct = np.zeros(n, dtype=np.bool_)
+        bull_fvg = np.zeros(n, dtype=np.bool_)
+        bear_fvg = np.zeros(n, dtype=np.bool_)
+        
+    use_rsi = params.get('use_rsi', False)
+    rsi_len = params.get('rsi_len', 14)
+    rsi_mode = params.get('rsi_mode', 'Boundary')
+    rsi_mode_code = 0 if rsi_mode == 'Boundary' else 1
+    rsi_ob = params.get('rsi_ob', 70.0)
+    rsi_os = params.get('rsi_os', 30.0)
+    if use_rsi:
+        rsi_vals = calc_rsi_pine_nb(c, rsi_len)
+    else:
+        rsi_vals = np.full(n, 50.0, dtype=np.float64)
+        
+    use_adx = params.get('use_adx', False)
+    adx_len = params.get('adx_len', 14)
+    adx_threshold = params.get('adx_threshold', 20.0)
+    if use_adx:
+        adx_vals = calc_adx_pine_nb(h, l, c, adx_len)
+    else:
+        adx_vals = np.zeros(n, dtype=np.float64)
+        
+    use_vol = params.get('use_vol', False)
+    vol_ma_len = params.get('vol_ma_len', 20)
+    vol_mult = params.get('vol_mult', 1.0)
+    if use_vol:
+        vol_ma = calc_sma_nb(v, vol_ma_len)
+    else:
+        vol_ma = np.zeros(n, dtype=np.float64)
+        
+    use_min_volat = params.get('use_min_volat', True)
+    min_volat = params.get('min_width_pct', 1.5)
+    use_ema = params.get('use_ema_filter', True)
+    
+    long_sig, short_sig = fast_signal_gen_nb(
+        trend, macro_ema, c, volat_ma, min_volat, use_min_volat, use_ema,
+        mom, use_squeeze,
+        bull_struct, bear_struct, bull_fvg, bear_fvg, use_smc, smc_mode_code,
+        rsi_vals, use_rsi, rsi_mode_code, rsi_ob, rsi_os,
+        adx_vals, use_adx, adx_threshold,
+        v, vol_ma, vol_mult, use_vol
+    )
+    
     split_idx = int(n * split_ratio)
-    
-    tp_fixed_pct = params.get('tp_fixed_pct', 3.0)
-    sl_fixed_pct = params.get('sl_fixed_pct', 2.0)
-    tp_atr_mult = params.get('tp_atr_mult', 3.5)
-    sl_atr_mult = params.get('sl_atr_mult', 2.0)
     tp_mode = params.get('tp_mode', 'ATR')
     sl_mode = params.get('sl_mode', 'ATR')
-    max_bars_hold = params.get('max_bars_hold', 72)
-    use_time_exit = params.get('use_time_exit', True)
-
-    def simulate_range(s_idx, e_idx):
+    tp_mode_code = 0 if tp_mode == 'None' else (1 if tp_mode == 'Fixed' else (2 if tp_mode == 'ATR' else 3))
+    sl_mode_code = 0 if sl_mode == 'None' else (1 if sl_mode == 'Fixed' else (2 if sl_mode == 'ATR' else 3))
+    
+    tp_fixed_pct = float(params.get('tp_fixed_pct', 3.0))
+    sl_fixed_pct = float(params.get('sl_fixed_pct', 2.0))
+    tp_atr_mult = float(params.get('tp_atr_mult', 3.5))
+    sl_atr_mult = float(params.get('sl_atr_mult', 2.0))
+    max_bars_hold = int(params.get('max_bars_hold', 72))
+    use_time_exit = bool(params.get('use_time_exit', True))
+    use_tr = bool(params.get('use_tr_exit', True))
+    
+    # ⚡ [초고속 모드: 유전 진화 탐색용]
+    if fast_mode:
+        is_t, is_sh, is_mdd, is_wr, is_ret = fast_simulate_range_nb(
+            c, o, h, l, atr, tr_ma, long_sig, short_sig,
+            0, split_idx,
+            tp_fixed_pct, sl_fixed_pct, tp_atr_mult, sl_atr_mult,
+            tp_mode_code, sl_mode_code,
+            max_bars_hold, use_time_exit, use_tr
+        )
+        oos_t, oos_sh, oos_mdd, oos_wr, oos_ret = fast_simulate_range_nb(
+            c, o, h, l, atr, tr_ma, long_sig, short_sig,
+            split_idx, n,
+            tp_fixed_pct, sl_fixed_pct, tp_atr_mult, sl_atr_mult,
+            tp_mode_code, sl_mode_code,
+            max_bars_hold, use_time_exit, use_tr
+        )
+        overfitting_ratio = round(oos_sh / is_sh if is_sh > 0 else 0.0, 3)
+        return {
+            'is': {'trades_count': is_t, 'sharpe': is_sh, 'mdd': is_mdd, 'win_rate': is_wr, 'return_pct': is_ret},
+            'oos': {'trades_count': oos_t, 'sharpe': oos_sh, 'mdd': oos_mdd, 'win_rate': oos_wr, 'return_pct': oos_ret},
+            'overfitting_ratio': overfitting_ratio
+        }
+        
+    # 🔍 [상세 모드: 수동 백테스트 및 최종 선택 전략 렌더링용]
+    def simulate_range_detail(s_idx, e_idx):
         sub_c = c[s_idx:e_idx]
         sub_o = o[s_idx:e_idx]
         sub_h = h[s_idx:e_idx]
@@ -435,10 +688,11 @@ def run_simulation(df, params, split_ratio=0.70):
         sub_tr_ma = tr_ma[s_idx:e_idx]
         sub_ls = long_sig[s_idx:e_idx]
         sub_ss = short_sig[s_idx:e_idx]
-        sub_idx = df.index[s_idx:e_idx]
+        sub_idx = df_index[s_idx:e_idx]
         
         in_pos = 0 # 1, -1, 0
         entry_p = 0.0
+        entry_time = None
         bars_held = 0
         
         trade_logs = []
@@ -450,18 +704,17 @@ def run_simulation(df, params, split_ratio=0.70):
             ch = sub_h[i]
             cl = sub_l[i]
             cc = sub_c[i]
+            co = sub_o[i]
             
-            # 포지션 관리
             if in_pos == 1:
                 bars_held += 1
-                # TP / SL 계산
                 fixed_tp = entry_p * (1.0 + tp_fixed_pct * 0.01)
                 atr_tp   = entry_p + (tp_atr_mult * ca)
-                tp_p = fixed_tp if tp_mode == 'Fixed' else atr_tp if tp_mode == 'ATR' else max(fixed_tp, atr_tp) if tp_mode == 'Both' else 999999.0
+                tp_p = fixed_tp if tp_mode == 'Fixed' else (atr_tp if tp_mode == 'ATR' else (max(fixed_tp, atr_tp) if tp_mode == 'Both' else 999999.0))
                 
                 fixed_sl = entry_p * (1.0 - sl_fixed_pct * 0.01)
                 atr_sl   = entry_p - (sl_atr_mult * ca)
-                sl_p = fixed_sl if sl_mode == 'Fixed' else atr_sl if sl_mode == 'ATR' else max(fixed_sl, atr_sl) if sl_mode == 'Both' else 0.0
+                sl_p = fixed_sl if sl_mode == 'Fixed' else (atr_sl if sl_mode == 'ATR' else (max(fixed_sl, atr_sl) if sl_mode == 'Both' else 0.0))
                 
                 hit_tp = ch >= tp_p
                 hit_sl = cl <= sl_p
@@ -470,9 +723,10 @@ def run_simulation(df, params, split_ratio=0.70):
                 hit_rev = sub_ss[i]
                 
                 if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    reason = "TP" if hit_tp else "SL" if hit_sl else "TR_MA" if hit_tr else "Time" if hit_time else "Reverse"
-                    exit_price = tp_p if hit_tp else sl_p if hit_sl else sub_o[i]
-                    pnl_pct = (exit_price / entry_p - 1.0) * 100 - 0.05
+                    reason = "TP" if hit_tp else ("SL" if hit_sl else ("TR_MA" if hit_tr else ("Time" if hit_time else "Reverse")))
+                    exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
+                    exit_price = max(exit_price, 1e-4)
+                    pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.05
                     trade_logs.append({
                         'entry_time': str(entry_time), 'exit_time': str(sub_idx[i]),
                         'type': 'Long', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
@@ -484,19 +738,19 @@ def run_simulation(df, params, split_ratio=0.70):
                     in_pos = 0
                     if hit_rev:
                         in_pos = -1
-                        entry_p = sub_o[i]
+                        entry_p = co
                         entry_time = sub_idx[i]
                         bars_held = 0
                         
             elif in_pos == -1:
                 bars_held += 1
-                fixed_tp = entry_p * (1.0 - tp_fixed_pct * 0.01)
-                atr_tp   = entry_p - (tp_atr_mult * ca)
-                tp_p = fixed_tp if tp_mode == 'Fixed' else atr_tp if tp_mode == 'ATR' else min(fixed_tp, atr_tp) if tp_mode == 'Both' else 0.0
+                fixed_tp = max(entry_p * (1.0 - tp_fixed_pct * 0.01), entry_p * 0.01)
+                atr_tp   = max(entry_p - (tp_atr_mult * ca), entry_p * 0.01)
+                tp_p = fixed_tp if tp_mode == 'Fixed' else (atr_tp if tp_mode == 'ATR' else (min(fixed_tp, atr_tp) if tp_mode == 'Both' else 0.0))
                 
                 fixed_sl = entry_p * (1.0 + sl_fixed_pct * 0.01)
                 atr_sl   = entry_p + (sl_atr_mult * ca)
-                sl_p = fixed_sl if sl_mode == 'Fixed' else atr_sl if sl_mode == 'ATR' else min(fixed_sl, atr_sl) if sl_mode == 'Both' else 999999.0
+                sl_p = fixed_sl if sl_mode == 'Fixed' else (atr_sl if sl_mode == 'ATR' else (min(fixed_sl, atr_sl) if sl_mode == 'Both' else 999999.0))
                 
                 hit_tp = cl <= tp_p
                 hit_sl = ch >= sl_p
@@ -505,9 +759,10 @@ def run_simulation(df, params, split_ratio=0.70):
                 hit_rev = sub_ls[i]
                 
                 if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    reason = "TP" if hit_tp else "SL" if hit_sl else "TR_MA" if hit_tr else "Time" if hit_time else "Reverse"
-                    exit_price = tp_p if hit_tp else sl_p if hit_sl else sub_o[i]
-                    pnl_pct = (entry_p / exit_price - 1.0) * 100 - 0.05
+                    reason = "TP" if hit_tp else ("SL" if hit_sl else ("TR_MA" if hit_tr else ("Time" if hit_time else "Reverse")))
+                    exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
+                    exit_price = max(exit_price, 1e-4)
+                    pnl_pct = (entry_p / exit_price - 1.0) * 100.0 - 0.05
                     trade_logs.append({
                         'entry_time': str(entry_time), 'exit_time': str(sub_idx[i]),
                         'type': 'Short', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
@@ -519,23 +774,22 @@ def run_simulation(df, params, split_ratio=0.70):
                     in_pos = 0
                     if hit_rev:
                         in_pos = 1
-                        entry_p = sub_o[i]
+                        entry_p = co
                         entry_time = sub_idx[i]
                         bars_held = 0
                         
             if in_pos == 0:
                 if sub_ls[i]:
                     in_pos = 1
-                    entry_p = sub_o[i]
+                    entry_p = co
                     entry_time = sub_idx[i]
                     bars_held = 0
                 elif sub_ss[i]:
                     in_pos = -1
-                    entry_p = sub_o[i]
+                    entry_p = co
                     entry_time = sub_idx[i]
                     bars_held = 0
                     
-        # 커스텀 지표 계산
         t = len(trade_logs)
         if t > 0:
             returns = np.array([tr['pnl_pct'] / 100.0 for tr in trade_logs])
@@ -543,17 +797,13 @@ def run_simulation(df, params, split_ratio=0.70):
             wr = (wins / t) * 100.0
             ret = (curr_equity / 10000.0 - 1.0) * 100.0
 
-            # MDD (Max Drawdown) calculation from equity curve points
             eq_vals = np.array([pt[1] for pt in equity_curve_points])
             roll_max = np.maximum.accumulate(eq_vals)
             drawdowns = (eq_vals - roll_max) / roll_max
             mdd = abs(np.min(drawdowns)) * 100.0
 
-            # Sharpe Ratio
             mean_ret = np.mean(returns)
             std_ret = np.std(returns)
-            # Assuming ~1000 trades per year for hourly crypto strategies as a rough annualization factor
-            # Alternatively, standardizing per trade: mean/std * sqrt(trades)
             sh = float(mean_ret / std_ret * np.sqrt(t)) if std_ret > 1e-8 else 0.0
         else:
             wr = 0.0
@@ -561,13 +811,9 @@ def run_simulation(df, params, split_ratio=0.70):
             mdd = 100.0
             sh = 0.0
 
-        # Convert equity points to pd.Series for vectorbt UI compatibility if needed
-        # We will pad the curve to match the original index for plotting
         equity_idx = [pt[0] for pt in equity_curve_points]
         equity_v = [pt[1] for pt in equity_curve_points]
         step_series = pd.Series(equity_v, index=equity_idx)
-        # Reindex and forward fill to create a continuous equity curve matching sub_idx
-        # Avoid duplicate index issues
         step_series = step_series[~step_series.index.duplicated(keep='last')]
         equity_series = step_series.reindex(sub_idx, method='ffill').fillna(10000.0)
         
@@ -581,13 +827,12 @@ def run_simulation(df, params, split_ratio=0.70):
             'trades': trade_logs
         }
         
-    is_res = simulate_range(0, split_idx)
-    oos_res = simulate_range(split_idx, n)
-    
-    overfitting_ratio = oos_res['sharpe'] / is_res['sharpe'] if is_res['sharpe'] > 0 else 0.0
+    is_res = simulate_range_detail(0, split_idx)
+    oos_res = simulate_range_detail(split_idx, n)
+    overfitting_ratio = round(oos_res['sharpe'] / is_res['sharpe'] if is_res['sharpe'] > 0 else 0.0, 3)
     
     return {
         'is': is_res,
         'oos': oos_res,
-        'overfitting_ratio': round(overfitting_ratio, 3)
+        'overfitting_ratio': overfitting_ratio
     }

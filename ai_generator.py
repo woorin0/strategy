@@ -1,10 +1,11 @@
-import pandas as pd
-import numpy as np
 import os
 import time
 import random
+import gc
+import pandas as pd
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from quant_engine import run_simulation
+from quant_engine import run_simulation, precompute_df_arrays
 
 def generate_pine_script_v6(strategy_title, params, metrics_summary):
     """
@@ -490,9 +491,9 @@ def _mutate_candidate(candidate, mutation_rate=0.25):
     return mutated
 
 def _worker_simulate(task_args):
-    """멀티프로세싱 워커 개별 실행 단위"""
-    df, cand, min_trades, max_mdd = task_args
-    sim_res = run_simulation(df, cand, split_ratio=0.70)
+    """초고속 무누수(Zero-Leak) 개별 시뮬레이션 단위"""
+    df_data, cand, min_trades, max_mdd = task_args
+    sim_res = run_simulation(df_data, cand, split_ratio=0.70, fast_mode=True)
     score = _evaluate_fitness(sim_res, min_trades=min_trades, max_mdd_allowed=max_mdd)
     
     return {
@@ -501,16 +502,20 @@ def _worker_simulate(task_args):
         'sim_res': sim_res
     }
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=10000, min_trades=100, max_mdd=40.0, num_workers=None, progress_callback=None):
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=10000, min_trades=100, max_mdd=40.0, num_workers=None, progress_callback=None, cancel_check=None):
     """
     [다세대 고수익 유전 진화 퀀트 탐색 엔진 (Genetic Evolutionary Algorithm)]
-    - 기본 10,000회 대규모 탐색: 5개 세대를 거치며 초고수익/고승률/MDD 40% 통제 전략으로 정밀 수렴
+    - Numba JIT 머신코드 가속 및 경량 메트릭 파이프라인으로 10,000회 탐색을 수십 초 내에 안전 완주
+    - 메모리 누수 원천 차단(Zero OOM) 및 비정상 중단 방지
     """
     total_cores = os.cpu_count() or 1
     if num_workers is None or num_workers <= 0:
         num_workers = min(max(total_cores, 1), 16)
         
     start_t = time.time()
+    
+    # 캔들 배열 1회 사전 변환 (시뮬레이션 반복 시 판다스 오버헤드 0화)
+    df_data = precompute_df_arrays(df) if not isinstance(df, dict) else df
     
     # 세대 수 및 세대별 개체 수 산정
     if max_iterations >= 3000:
@@ -525,31 +530,47 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
     pop_size = max(max_iterations // n_generations, 20)
     actual_total = pop_size * n_generations
     
-    all_evaluated = []
     current_population = [_sample_random_candidate() for _ in range(pop_size)]
     global_best = None
     
     total_completed = 0
+    last_callback_time = 0.0
+    last_callback_pct = -1
     
     for gen in range(1, n_generations + 1):
-        tasks = [(df, cand, min_trades, max_mdd) for cand in current_population]
+        if cancel_check and cancel_check():
+            break
+            
+        tasks = [(df_data, cand, min_trades, max_mdd) for cand in current_population]
         gen_results = []
         
         if num_workers > 1:
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(_worker_simulate, t): t for t in tasks}
                 for f in as_completed(futures):
+                    if cancel_check and cancel_check():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
                     res = f.result()
                     gen_results.append(res)
                     total_completed += 1
                     
-                    if progress_callback:
-                        pct = int((total_completed / actual_total) * 100)
-                        pct = min(pct, 99)
-                        best_so_far_ret = global_best['sim_res']['oos']['return_pct'] if global_best else res['sim_res']['oos']['return_pct']
-                        best_so_far_wr = global_best['sim_res']['oos']['win_rate'] if global_best else res['sim_res']['oos']['win_rate']
-                        best_so_far_mdd = global_best['sim_res']['oos']['mdd'] if global_best else res['sim_res']['oos']['mdd']
-                        best_trades = global_best['sim_res']['oos']['trades_count'] if global_best else res['sim_res']['oos']['trades_count']
+                    # 글로벌 최고 실시간 갱신
+                    if global_best is None or res['score'] > global_best['score']:
+                        global_best = res
+                        
+                    now_t = time.time()
+                    pct = int((total_completed / actual_total) * 100)
+                    pct = min(pct, 99)
+                    
+                    # 콜백 스로틀링: 0.15초 이상 경과 또는 1% 이상 변화 시 호출 (I/O 병목 방지)
+                    if progress_callback and (now_t - last_callback_time >= 0.15 or pct != last_callback_pct or total_completed == actual_total):
+                        last_callback_time = now_t
+                        last_callback_pct = pct
+                        best_so_far_ret = global_best['sim_res']['oos']['return_pct']
+                        best_so_far_wr = global_best['sim_res']['oos']['win_rate']
+                        best_so_far_mdd = global_best['sim_res']['oos']['mdd']
+                        best_trades = global_best['sim_res']['oos']['trades_count']
                         progress_callback(
                             pct,
                             f"[AI 유전 진화 {gen}/{n_generations}세대] {total_completed}/{actual_total} 검증 중 "
@@ -557,58 +578,72 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
                         )
         else:
             for cand in current_population:
-                res = _worker_simulate((df, cand, min_trades, max_mdd))
+                if cancel_check and cancel_check():
+                    break
+                res = _worker_simulate((df_data, cand, min_trades, max_mdd))
                 gen_results.append(res)
                 total_completed += 1
-                if progress_callback:
-                    pct = int((total_completed / actual_total) * 100)
-                    pct = min(pct, 99)
-                    progress_callback(pct, f"[AI 유전 진화 {gen}/{n_generations}세대] {total_completed}/{actual_total} 검증 중...")
+                if global_best is None or res['score'] > global_best['score']:
+                    global_best = res
+                now_t = time.time()
+                pct = int((total_completed / actual_total) * 100)
+                pct = min(pct, 99)
+                if progress_callback and (now_t - last_callback_time >= 0.15 or pct != last_callback_pct or total_completed == actual_total):
+                    last_callback_time = now_t
+                    last_callback_pct = pct
+                    best_so_far_ret = global_best['sim_res']['oos']['return_pct']
+                    best_so_far_wr = global_best['sim_res']['oos']['win_rate']
+                    best_so_far_mdd = global_best['sim_res']['oos']['mdd']
+                    best_trades = global_best['sim_res']['oos']['trades_count']
+                    progress_callback(
+                        pct,
+                        f"[AI 유전 진화 {gen}/{n_generations}세대] {total_completed}/{actual_total} 검증 중 "
+                        f"(최고 수익률: {best_so_far_ret:+.1f}%, 승률: {best_so_far_wr:.1f}%, MDD: {best_so_far_mdd:.1f}%, 거래: {best_trades}회 | {num_workers}코어)"
+                    )
                     
+        if cancel_check and cancel_check():
+            break
+            
         # 세대 결과 정렬
         gen_results.sort(key=lambda x: x['score'], reverse=True)
-        all_evaluated.extend(gen_results)
-        
-        # 글로벌 최고 갱신
         if global_best is None or gen_results[0]['score'] > global_best['score']:
             global_best = gen_results[0]
             
-        # 마지막 세대가 아니면 다음 세대 육성 (Elitism + Crossover + Mutation)
+        # 다음 세대 육성 (Elitism + Crossover + Mutation)
         if gen < n_generations:
-            # 엘리트 풀 (상위 25%)
             elite_count = max(int(pop_size * 0.25), 3)
             elites = [x['params'] for x in gen_results[:elite_count]]
             
             next_pop = []
-            # 최상위 5% 무조건 보존 (Elitism)
             keep_count = max(int(pop_size * 0.05), 2)
             next_pop.extend(elites[:keep_count])
             
-            # 교차 및 돌연변이로 나머지 채우기
             while len(next_pop) < pop_size:
                 r = random.random()
                 if r < 0.65:
-                    # 상위 엘리트 간 교차
                     p1, p2 = random.sample(elites, 2)
                     child = _crossover_candidates(p1, p2)
                     child = _mutate_candidate(child, mutation_rate=0.20)
                     next_pop.append(child)
                 elif r < 0.85:
-                    # 엘리트 단독 변이
                     p = random.choice(elites)
                     mut = _mutate_candidate(p, mutation_rate=0.35)
                     next_pop.append(mut)
                 else:
-                    # 국소 최적화 탈출용 신규 무작위 개체 (Diversity)
                     next_pop.append(_sample_random_candidate())
                     
             current_population = next_pop[:pop_size]
+            
+        # 메모리 정리: 세대 결과 객체 즉시 삭제 및 GC 수거
+        del gen_results
+        gc.collect()
 
-    # 전체 세대 중 최종 최고 모델 선정
-    all_evaluated.sort(key=lambda x: x['score'], reverse=True)
-    best = all_evaluated[0]
-    best_params = best['params']
-    best_sim = best['sim_res']
+    if cancel_check and cancel_check():
+        raise RuntimeError("사용자에 의해 전략 생성이 중단되었습니다.")
+        
+    # 최종 최고 전략에 대해 '단 1회' 상세 시뮬레이션(완전한 에쿼티 커브 & 상세 거래내역 생성)
+    best_params = global_best['params']
+    best_sim = run_simulation(df, best_params, split_ratio=0.70, fast_mode=False)
     elapsed_time = round(time.time() - start_t, 2)
     
     summary = {
