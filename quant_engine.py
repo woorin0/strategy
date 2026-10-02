@@ -294,9 +294,10 @@ def calc_sma_nb(arr, length):
         sma[i] = sum_val / length
     return sma
 
-# [고속 신호 생성 Numba JIT]
+# [고속 다중 아키텍처 신호 생성 Numba JIT]
 @njit
 def fast_signal_gen_nb(
+    strategy_type_code, # 0: SuperTrend, 1: EMA_Cross, 2: Squeeze, 3: SMC, 4: RSI_Reversal
     trend, macro_ema, c, volat_ma, min_volat, use_min_volat, use_ema,
     mom, use_squeeze,
     bull_struct, bear_struct, bull_fvg, bear_fvg, use_smc, smc_mode_code,
@@ -309,19 +310,59 @@ def fast_signal_gen_nb(
     short_sig = np.zeros(n, dtype=np.bool_)
     
     for i in range(1, n - 1):
-        if np.isnan(trend[i]) or np.isnan(trend[i-1]):
+        if np.isnan(c[i]) or np.isnan(c[i-1]):
             continue
+            
+        # 메인 진입 트리거 판정 (전략 유형별 독립 알고리즘)
+        trig_l = False
+        trig_s = False
+        
+        if strategy_type_code == 0:
+            # 1. SuperTrend 추세 반전 트리거
+            if not np.isnan(trend[i]) and not np.isnan(trend[i-1]):
+                trig_l = (trend[i] == 1) and (trend[i-1] == -1)
+                trig_s = (trend[i] == -1) and (trend[i-1] == 1)
+        elif strategy_type_code == 1:
+            # 2. Macro EMA 크로스오버 돌파 트리거
+            trig_l = (c[i] > macro_ema[i]) and (c[i-1] <= macro_ema[i-1])
+            trig_s = (c[i] < macro_ema[i]) and (c[i-1] >= macro_ema[i-1])
+        elif strategy_type_code == 2:
+            # 3. Squeeze Momentum 발산 폭발 트리거 (모멘텀 0선 돌파)
+            trig_l = (mom[i] > 0.0) and (mom[i-1] <= 0.0)
+            trig_s = (mom[i] < 0.0) and (mom[i-1] >= 0.0)
+        elif strategy_type_code == 3:
+            # 4. Smart Money Concepts (BOS 구조 갱신 돌파)
+            trig_l = bull_struct[i] and not bull_struct[i-1]
+            trig_s = bear_struct[i] and not bear_struct[i-1]
+        elif strategy_type_code == 4:
+            # 5. RSI 평균회귀 스윙 반등 트리거 (과매도 탈출/과매수 탈출)
+            trig_l = (rsi_vals[i] > rsi_os) and (rsi_vals[i-1] <= rsi_os)
+            trig_s = (rsi_vals[i] < rsi_ob) and (rsi_vals[i-1] >= rsi_ob)
+            
+        if not (trig_l or trig_s):
+            continue
+            
+        # 보조 필터 검증
         v_ok = not use_min_volat or (volat_ma[i] >= min_volat)
-        bull_flip = (trend[i] == 1) and (trend[i-1] == -1)
-        bear_flip = (trend[i] == -1) and (trend[i-1] == 1)
         
-        long_regime = not use_ema or (c[i] > macro_ema[i])
-        short_regime = not use_ema or (c[i] < macro_ema[i])
-        
-        sqz_long_pass = not use_squeeze or (mom[i] > 0)
-        sqz_short_pass = not use_squeeze or (mom[i] < 0)
-        
-        if not use_smc:
+        # EMA 필터 (자신이 EMA Cross가 아닐 때만 적용)
+        if strategy_type_code == 1 or not use_ema:
+            long_regime = True
+            short_regime = True
+        else:
+            long_regime = (c[i] > macro_ema[i])
+            short_regime = (c[i] < macro_ema[i])
+            
+        # Squeeze 필터 (자신이 Squeeze가 아닐 때만 적용)
+        if strategy_type_code == 2 or not use_squeeze:
+            sqz_long_pass = True
+            sqz_short_pass = True
+        else:
+            sqz_long_pass = (mom[i] > 0.0)
+            sqz_short_pass = (mom[i] < 0.0)
+            
+        # SMC 필터 (자신이 SMC가 아닐 때만 적용)
+        if strategy_type_code == 3 or not use_smc:
             smc_long_pass = True
             smc_short_pass = True
         else:
@@ -342,7 +383,8 @@ def fast_signal_gen_nb(
                 smc_long_pass = bull_struct[i] and recent_bull_fvg
                 smc_short_pass = bear_struct[i] and recent_bear_fvg
                 
-        if not use_rsi:
+        # RSI 필터 (자신이 RSI가 아닐 때만 적용)
+        if strategy_type_code == 4 or not use_rsi:
             rsi_long_pass = True
             rsi_short_pass = True
         else:
@@ -357,9 +399,9 @@ def fast_signal_gen_nb(
         vol_pass = not use_vol or (v[i] >= vol_ma[i] * vol_mult)
         
         # shift 1: i 시점 신호는 i+1 봉에서 실행 (Look-ahead 방지)
-        if bull_flip and long_regime and v_ok and sqz_long_pass and smc_long_pass and rsi_long_pass and adx_pass and vol_pass:
+        if trig_l and v_ok and long_regime and sqz_long_pass and smc_long_pass and rsi_long_pass and adx_pass and vol_pass:
             long_sig[i+1] = True
-        if bear_flip and short_regime and v_ok and sqz_short_pass and smc_short_pass and rsi_short_pass and adx_pass and vol_pass:
+        if trig_s and v_ok and short_regime and sqz_short_pass and smc_short_pass and rsi_short_pass and adx_pass and vol_pass:
             short_sig[i+1] = True
             
     return long_sig, short_sig
@@ -569,6 +611,18 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
         df_index = df.index
         n = len(df)
         
+    strategy_type = params.get('strategy_type', 'SuperTrend_Trend')
+    if strategy_type == 'EMA_Cross':
+        strategy_type_code = 1
+    elif strategy_type == 'Squeeze_Breakout':
+        strategy_type_code = 2
+    elif strategy_type == 'SMC_Structure':
+        strategy_type_code = 3
+    elif strategy_type == 'RSI_Reversal':
+        strategy_type_code = 4
+    else:
+        strategy_type_code = 0
+        
     st_period = params.get('st_period', 7)
     st_mult = params.get('st_mult', 3.0)
     atr = calc_atr_pine_nb(h, l, c, st_period)
@@ -584,7 +638,7 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
     bb_mult = params.get('bb_mult', 2.0)
     kc_mult = params.get('kc_mult', 1.5)
     use_squeeze = params.get('use_squeeze', False)
-    if use_squeeze:
+    if use_squeeze or strategy_type_code == 2:
         _, _, mom = compute_squeeze_momentum_nb(h, l, c, length=sqz_len, mult_bb=bb_mult, mult_kc=kc_mult)
     else:
         mom = np.zeros(n, dtype=np.float64)
@@ -593,7 +647,7 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
     smc_swing_len = params.get('smc_swing_len', 5)
     smc_mode = params.get('smc_mode', 'Structure')
     smc_mode_code = 0 if smc_mode == 'Structure' else (1 if smc_mode == 'FVG' else 2)
-    if use_smc:
+    if use_smc or strategy_type_code == 3:
         bull_struct, bear_struct, bull_fvg, bear_fvg = compute_smc_signals_nb(h, l, c, swing_len=smc_swing_len)
     else:
         bull_struct = np.zeros(n, dtype=np.bool_)
@@ -607,7 +661,7 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
     rsi_mode_code = 0 if rsi_mode == 'Boundary' else 1
     rsi_ob = params.get('rsi_ob', 70.0)
     rsi_os = params.get('rsi_os', 30.0)
-    if use_rsi:
+    if use_rsi or strategy_type_code == 4:
         rsi_vals = calc_rsi_pine_nb(c, rsi_len)
     else:
         rsi_vals = np.full(n, 50.0, dtype=np.float64)
@@ -633,6 +687,7 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
     use_ema = params.get('use_ema_filter', True)
     
     long_sig, short_sig = fast_signal_gen_nb(
+        strategy_type_code,
         trend, macro_ema, c, volat_ma, min_volat, use_min_volat, use_ema,
         mom, use_squeeze,
         bull_struct, bear_struct, bull_fvg, bear_fvg, use_smc, smc_mode_code,

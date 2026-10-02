@@ -20,11 +20,15 @@ except Exception:
     pass
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    def st_autorefresh(*args, **kwargs):
+        return None
 from data_manager import get_cached_data
 from quant_engine import run_simulation
 from report_exporter import export_backtest_to_excel
-from ai_generator import generate_pine_script_v6
+from ai_generator import generate_pine_script_v6, STRATEGY_ARCHETYPES, STRATEGY_TYPE_KEYS
 from discord_notifier import send_strategy_alert, send_test_alert, DEFAULT_WEBHOOK_URL
 from evolution_manager import (
     get_job_status,
@@ -116,8 +120,15 @@ with st.sidebar:
     mode = st.radio("모드 선택", ["🤖 AI 에이전트 자율 전략 생성", "🛠️ 수동 파라미터 백테스트"], index=0)
     
     if mode == "🛠️ 수동 파라미터 백테스트":
-        st.markdown("### 2. 전략 파라미터 튜닝")
-        with st.expander("🚀 SuperTrend 엔진", expanded=True):
+        st.markdown("### 2. 전략 아키텍처 및 파라미터 튜닝")
+        archetype_options = [
+            f"{STRATEGY_ARCHETYPES[k]['icon']} {STRATEGY_ARCHETYPES[k]['name_kr']} ({k})"
+            for k in STRATEGY_TYPE_KEYS
+        ]
+        chosen_archetype_idx = st.selectbox("🎯 매매 코어 아키텍처 선택", range(len(archetype_options)), format_func=lambda i: archetype_options[i], index=0)
+        chosen_strategy_type = STRATEGY_TYPE_KEYS[chosen_archetype_idx]
+        
+        with st.expander("🚀 SuperTrend 엔진", expanded=(chosen_strategy_type == 'SuperTrend_Trend')):
             st_period = st.slider("SuperTrend Period", 3, 21, 7)
             st_mult = st.slider("SuperTrend Multiplier", 1.5, 5.0, 3.0, 0.1)
             
@@ -214,7 +225,7 @@ with st.sidebar:
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"🧬 **고수익 유전 진화 풀가동**: 8대 퀀트 지표군을 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, MDD {max_mdd:.0f}% 한도 내에서 승률 50%+ & 1,000%+ 수익률을 지향하는 Pine Script v6 코드를 합성합니다.")
+        st.info(f"🧬 **5대 멀티 아키텍처 고수익 유전 진화**: SuperTrend 추세추종, Dual EMA 크로스, Squeeze 모멘텀 폭발, SMC 기관 구조돌파, RSI 평균회귀 등 5대 독립 전략 아키텍처를 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, 종목 시계열에 최적화된 독립 알고리즘 코드를 동적 합성합니다.")
         btn_ai_run = st.button("🤖 AI 심층 진화 & 고수익 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
@@ -342,6 +353,7 @@ if btn_manual_run:
 
         if df is not None:
             params = {
+                'strategy_type': chosen_strategy_type,
                 'st_period': st_period, 'st_mult': st_mult,
                 'use_squeeze': use_squeeze, 'sqz_len': sqz_len, 'bb_mult': bb_mult, 'kc_mult': kc_mult,
                 'use_smc': use_smc, 'smc_swing_len': smc_swing_len, 'smc_mode': smc_mode,
@@ -357,17 +369,25 @@ if btn_manual_run:
                 'use_time_exit': use_time_exit, 'max_bars_hold': max_bars_hold
             }
             res = run_simulation(df, params, split_ratio=0.70)
+            meta = STRATEGY_ARCHETYPES.get(chosen_strategy_type, STRATEGY_ARCHETYPES['SuperTrend_Trend'])
             summary = {
                 'symbol': symbol, 'timeframe': timeframe,
+                'strategy_type': chosen_strategy_type,
+                'strategy_type_kr': meta['name_kr'],
+                'strategy_icon': meta['icon'],
+                'strategy_desc': meta['desc'],
                 'oos_sharpe': res['oos']['sharpe'], 'oos_return': res['oos']['return_pct'],
                 'oos_mdd': res['oos']['mdd'], 'oos_win_rate': res['oos']['win_rate'],
                 'oos_trades': res['oos']['trades_count']
             }
-            pine_code = generate_pine_script_v6(f"Custom {symbol} {timeframe} Strategy v6", params, summary)
+            pine_code = generate_pine_script_v6(f"Custom [{meta['icon']} {chosen_strategy_type}] {symbol} {timeframe} Strategy v6", params, summary)
             
             # 수동 결과 세션 저장
             st.session_state["active_strategy"] = {
                 "symbol": symbol, "timeframe": timeframe,
+                "strategy_type": chosen_strategy_type,
+                "strategy_type_kr": meta['name_kr'],
+                "strategy_icon": meta['icon'],
                 "oos_sharpe": res['oos']['sharpe'], "oos_return": res['oos']['return_pct'],
                 "oos_mdd": res['oos']['mdd'], "oos_win_rate": res['oos']['win_rate'],
                 "oos_trades": res['oos']['trades_count'],
@@ -409,6 +429,30 @@ if active_strat is None:
         )
 
 if active_strat is not None:
+    strat_type = active_strat.get('strategy_type') or active_strat.get('best_params', {}).get('strategy_type', 'SuperTrend_Trend')
+    meta = STRATEGY_ARCHETYPES.get(strat_type, STRATEGY_ARCHETYPES['SuperTrend_Trend'])
+    
+    st.markdown(f"""
+    <div style='background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-left: 6px solid #38bdf8; border-radius: 10px; padding: 18px 22px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);'>
+        <div style='display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;'>
+            <div style='display: flex; align-items: center; gap: 14px;'>
+                <span style='font-size: 2.2em;'>{meta['icon']}</span>
+                <div>
+                    <div style='display: flex; align-items: center; gap: 8px;'>
+                        <span style='font-weight: 800; font-size: 1.25em; color: #f8fafc;'>당선된 전략 아키텍처: {meta['name_kr']}</span>
+                        <span style='background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 3px 10px; border-radius: 6px; font-size: 0.82em; font-weight: 600; border: 1px solid rgba(56, 189, 248, 0.4);'>{strat_type}</span>
+                    </div>
+                    <p style='margin: 6px 0 0 0; font-size: 0.95em; color: #94a3b8; line-height: 1.4;'>💡 <b>알고리즘 매매 원리</b>: {meta['desc']}</p>
+                </div>
+            </div>
+            <div style='text-align: right; background: rgba(255,255,255,0.05); padding: 8px 14px; border-radius: 8px;'>
+                <span style='font-size: 0.8em; color: #94a3b8;'>적용 종목/타임프레임</span><br/>
+                <b style='color: #f8fafc; font-size: 1.1em;'>{active_strat.get('symbol')} ({active_strat.get('timeframe')})</b>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     # 텔레메트리 메트릭 5종 카드
     c1, c2, c3, c4, c5 = st.columns(5)
     sh_oos = active_strat.get('oos_sharpe', 0.0)
@@ -459,8 +503,8 @@ if active_strat is not None:
     st.divider()
     
     # 📝 AI가 합성한 Pine Script v6 코드 뷰어
-    st.subheader("🤖 AI 에이전트가 자동 합성한 Pine Script v6 전략 코드 (8대 퀀트 지표 융합)")
-    st.caption("아래 코드는 선택한 차트에 대해 SuperTrend, Macro EMA, Squeeze, SMC, RSI, ADX, Volume MA 등 유전 진화로 엄선된 최적 지표 조합과 리스크 관리 엔진으로 작성된 공식 Pine Script v6 코드입니다.")
+    st.subheader(f"🤖 AI 동적 합성 Pine Script v6 전략 코드 [{meta['icon']} {meta['name_kr']}]")
+    st.caption(f"아래 코드는 선택한 차트에 대해 **{meta['name_kr']}**을(를) 코어로 채택하고, 활성화된 유효 보조 필터만을 선별 결합하여 모듈식으로 자동 작성된 공식 TradingView Pine Script v6 완전한 코드입니다.")
     
     code_text = active_strat.get("pine_code", "")
     st.text_area("Pine Script Code", value=code_text, height=350)
@@ -489,7 +533,7 @@ if active_strat is not None:
             st.caption("아직 보관된 과거 전략이 없습니다.")
         else:
             hist_options = [
-                f"[{h['timestamp']}] {h['symbol']} ({h['timeframe']}) - 수익률: {h['return_pct']:+.1f}% | 승률: {h['win_rate']:.1f}% | MDD: {h['mdd']:.1f}%"
+                f"[{h['timestamp']}] {h.get('strategy_icon', '⚡')} {h.get('strategy_type_kr', '전략')} | {h['symbol']} ({h['timeframe']}) - 수익률: {h['return_pct']:+.1f}% | 승률: {h['win_rate']:.1f}% | MDD: {h['mdd']:.1f}%"
                 for h in history_list
             ]
             selected_hist_idx = st.selectbox("불러올 전략 선택", range(len(hist_options)), format_func=lambda i: hist_options[i])
