@@ -14,27 +14,27 @@ STRATEGY_ARCHETYPES = {
     'SuperTrend_Trend': {
         'name_kr': 'SuperTrend 추세추종 & 변동성 돌파',
         'icon': '🚀',
-        'desc': 'SuperTrend 방향 전환 및 추세 파동을 끝까지 추종하는 전형적인 추세 알파 전략'
+        'desc': 'SuperTrend 강세 전환 시 매수하고 약세 전환 시 매도 현금화하는 현물 롱 추세 알파 전략'
     },
     'EMA_Cross': {
         'name_kr': 'Dual EMA 모멘텀 크로스오버 돌파',
         'icon': '📈',
-        'desc': '단기 및 장기 지수이동평균선의 골든/데드크로스를 활용한 모멘텀 돌파 전략'
+        'desc': '단기 및 장기 지수이동평균선의 골든크로스 시 매수하고 데드크로스 시 매도 현금화하는 현물 롱 전략'
     },
     'Squeeze_Breakout': {
         'name_kr': 'Squeeze Momentum 변동성 수축-폭발 돌파',
         'icon': '⚡',
-        'desc': '볼린저 밴드가 켈트너 채널 안으로 압축된 후 모멘텀이 0선을 뚫고 강력하게 분출할 때 진입하는 전략'
+        'desc': '볼린저 밴드가 켈트너 채널 안으로 압축된 후 상방 모멘텀 0선 분출 시 매수하는 현물 롱 전략'
     },
     'SMC_Structure': {
         'name_kr': 'Smart Money Concepts (BOS 구조 갱신) 기관 돌파',
         'icon': '🏛️',
-        'desc': '스마트 머니의 이전 스윙 고점/저점 돌파(Break of Structure) 및 수급 불균형(FVG)을 포착하는 기관 추종 전략'
+        'desc': '스마트 머니의 이전 스윙 고점 돌파(Bullish BOS) 및 수급 불균형(FVG)을 포착하여 매수하는 기관 추종 현물 전략'
     },
     'RSI_Reversal': {
         'name_kr': 'RSI 과매수/과매도 스윙 평균회귀 역발상',
         'icon': '🎯',
-        'desc': '극단적 과열/침체 구간에서 반등하는 파동을 날카롭게 스윙 포착하는 평균회귀 전략'
+        'desc': '극단적 과매도(침체) 구간 이탈 후 반등하는 파동을 포착하여 저점 매수하는 현물 스윙 전략'
     }
 }
 
@@ -100,6 +100,7 @@ def generate_pine_script_v6(strategy_title, params, metrics_summary):
 // =========================================================================
 // AI Deep Quantum Evolutionary Strategy Generator v6.0
 // [전략 아키텍처]: {type_icon} {type_name_kr} ({strat_type})
+// [거래 모드]: 🪙 현물 롱 전용 매매 (Spot Long-Only)
 // [전략 원리]: {type_desc}
 // -------------------------------------------------------------------------
 // [AI Engine 백테스트 성과 리포트]
@@ -114,7 +115,7 @@ strategy("{strategy_title}",
          default_qty_type=strategy.percent_of_equity, 
          default_qty_value=100, 
          commission_type=strategy.commission.percent, 
-         commission_value=0.05, 
+         commission_value=0.08, 
          process_orders_on_close=true)
 ''')
 
@@ -310,7 +311,7 @@ strategy("{strategy_title}",
         filter_cond_short.append("rsi_short_ok")
         
     if use_adx:
-        calc_lines.append("[_, _, adx_val] = ta.dmi(adx_len, adx_len)")
+        calc_lines.append("[di_plus, di_minus, adx_val] = ta.dmi(adx_len, adx_len)")
         calc_lines.append("adx_ok = not use_adx_filter or (adx_val >= adx_threshold)")
         filter_cond_long.append("adx_ok")
         filter_cond_short.append("adx_ok")
@@ -335,18 +336,14 @@ strategy("{strategy_title}",
     # [3. 진입 및 청산 실행 섹션]
     order_lines = [
         "\n// ==========================================",
-        "// 3. ORDER EXECUTION & RISK MANAGEMENT",
+        "// 3. ORDER EXECUTION & RISK MANAGEMENT (현물 롱 전용)",
         "// ==========================================",
         "var float long_entry_price = na",
-        "var float short_entry_price = na",
         "",
-        "if long_condition and strategy.position_size <= 0",
+        "// 롱 포지션 진입 (현물 매수)",
+        "if long_condition and strategy.position_size == 0",
         '    strategy.entry("Long", strategy.long, comment="Entry_Long")',
         "    long_entry_price := close",
-        "",
-        "if short_condition and strategy.position_size >= 0",
-        '    strategy.entry("Short", strategy.short, comment="Entry_Short")',
-        "    short_entry_price := close",
         "",
         "// 익절(Take Profit) & 손절(Stop Loss) 계산",
         "fixed_long_tp = long_entry_price * (1.0 + tp_fixed_pct * 0.01)",
@@ -357,18 +354,13 @@ strategy("{strategy_title}",
         'final_long_tp = tp_mode == "Fixed" ? fixed_long_tp : (tp_mode == "ATR" ? atr_long_tp : (tp_mode == "Both" ? math.max(fixed_long_tp, atr_long_tp) : na))',
         'final_long_sl = sl_mode == "Fixed" ? fixed_long_sl : (sl_mode == "ATR" ? atr_long_sl : (sl_mode == "Both" ? math.max(fixed_long_sl, atr_long_sl) : na))',
         "",
-        "fixed_short_tp = short_entry_price * (1.0 - tp_fixed_pct * 0.01)",
-        "fixed_short_sl = short_entry_price * (1.0 + sl_fixed_pct * 0.01)",
-        "atr_short_tp   = short_entry_price - (tp_atr_mult * atr_val)",
-        "atr_short_sl   = short_entry_price + (sl_atr_mult * atr_val)",
-        "",
-        'final_short_tp = tp_mode == "Fixed" ? fixed_short_tp : (tp_mode == "ATR" ? atr_short_tp : (tp_mode == "Both" ? math.min(fixed_short_tp, atr_short_tp) : na))',
-        'final_short_sl = sl_mode == "Fixed" ? fixed_short_sl : (sl_mode == "ATR" ? atr_short_sl : (sl_mode == "Both" ? math.min(fixed_short_sl, atr_short_sl) : na))',
-        "",
+        "// 익절/손절 청산 주문",
         'if strategy.position_size > 0',
         '    strategy.exit("TP/SL_Long", "Long", limit=final_long_tp, stop=final_long_sl)',
-        'if strategy.position_size < 0',
-        '    strategy.exit("TP/SL_Short", "Short", limit=final_short_tp, stop=final_short_sl)'
+        "",
+        "// 하락/반전 신호 발생 시 현금화 청산 (현물 매도)",
+        'if strategy.position_size > 0 and short_condition',
+        '    strategy.close("Long", comment="Exit_Signal")'
     ]
     
     # 비상 탈출 로직
@@ -377,9 +369,7 @@ strategy("{strategy_title}",
             "",
             "// TR MA 비상 청산",
             "if strategy.position_size > 0 and close < tr_ma",
-            '    strategy.close("Long", comment="TR_MA_Exit_Long")',
-            "if strategy.position_size < 0 and close > tr_ma",
-            '    strategy.close("Short", comment="TR_MA_Exit_Short")'
+            '    strategy.close("Long", comment="TR_MA_Exit")'
         ])
         
     if use_time:
@@ -389,9 +379,7 @@ strategy("{strategy_title}",
             "bars_in_trade = ta.barssince(strategy.position_size != strategy.position_size[1])",
             "if use_time_exit and (bars_in_trade >= max_bars_hold)",
             '    if strategy.position_size > 0',
-            '        strategy.close("Long", comment="Time_Expiry_Long")',
-            '    if strategy.position_size < 0',
-            '        strategy.close("Short", comment="Time_Expiry_Short")'
+            '        strategy.close("Long", comment="Time_Expiry")'
         ])
         
     sections.append("\n".join(order_lines))
@@ -512,17 +500,20 @@ def _sample_random_candidate():
     cand['use_time_exit'] = random.choice([True, False])
     return cand
 
-def _evaluate_fitness(sim_res, min_trades=100, max_mdd_allowed=40.0):
+def _evaluate_fitness(sim_res, min_trades=50, max_mdd_allowed=35.0):
     """
-    [초고수익 (1,000%+) & 고승률 (50%+) 극대화 실전 퀀트 적합도 함수 (Fitness Function)]
+    [현물 롱 전용(Spot Long-Only) 실전 퀀트 적합도 함수 (Fitness Function)]
+    - 복리 수익률 왜곡(단일 고빈도 전략의 수십만 점 폭발 독점)을 방지하기 위해 로그 스케일 적용
+    - 위험 대비 수익비(샤프 지수) 및 MDD 방어력, 승률에 높은 가중치 부여
+    - 오버트레이딩(과도한 잦은 매매로 인한 수수료 누적) 억제 및 표본 신뢰도 확보
     """
     oos = sim_res['oos']
     is_res = sim_res['is']
     trades = oos.get('trades_count', 0)
     
-    # 1. 최소 거래수 검증: 표본 부족에 의한 우연한 수익/과적합 원천 배제
+    # 1. 최소 거래수 검증: 표본 부족에 의한 우연한 수익 원천 배제 (현물 스윙 기준 50회)
     if trades < min_trades:
-        return -2000.0 - (min_trades - trades) * 10.0
+        return -2000.0 - (min_trades - trades) * 15.0
         
     oos_sh = oos.get('sharpe', 0.0)
     oos_ret = oos.get('return_pct', 0.0)
@@ -530,45 +521,52 @@ def _evaluate_fitness(sim_res, min_trades=100, max_mdd_allowed=40.0):
     win_rate = oos.get('win_rate', 0.0)
     overfitting_ratio = sim_res.get('overfitting_ratio', 1.0)
     
+    # 마이너스 수익률 탈락 처리
+    if oos_ret <= 0.0:
+        return -1000.0 + oos_ret
+        
     score = 0.0
     
-    # 2. [승률 50% 이상 특급 가산점 & 50% 미만 페널티]
-    if win_rate >= 50.0:
-        score += 30.0 + (win_rate - 50.0) * 2.5
-    else:
-        score -= (50.0 - win_rate) * 2.0
-        
-    # 3. [누적 수익률 1,000%+ 초고수익 배점]
-    score += (oos_ret / 10.0) * 2.0
-    if oos_ret >= 1000.0:
-        score += 200.0 + (oos_ret - 1000.0) * 0.2
-    elif oos_ret >= 500.0:
-        score += 70.0
-    elif oos_ret >= 200.0:
-        score += 25.0
-    elif oos_ret < 50.0:
-        score -= 30.0
-        
-    # 4. [MDD 40% 제한 조건]
-    if oos_mdd > max_mdd_allowed:
-        score -= (oos_mdd - max_mdd_allowed) * 4.0
-    score -= oos_mdd * 0.02
-    
-    # 5. OOS 샤프 지수 보너스
+    # 2. [OOS 샤프 지수 핵심 배점 (위험 대비 보상)]
     if oos_sh > 0:
-        score += oos_sh * 5.0
+        score += min(oos_sh, 10.0) * 15.0
+        
+    # 3. [승률 50% 이상 가산점 & 미만 감점]
+    if win_rate >= 50.0:
+        score += 25.0 + (win_rate - 50.0) * 2.0
     else:
-        score += oos_sh * 2.0
+        score -= (50.0 - win_rate) * 1.5
         
-    # 6. WFO 일반화 능력 검증 (과최적화 방지)
-    if 0.4 <= overfitting_ratio <= 2.0:
-        score += 5.0
-    elif overfitting_ratio < 0.2:
-        score -= 10.0
+    # 4. [로그 스케일 수익률 점수: 특정 전략의 비정상적 복리 폭발 독점 차단]
+    score += np.log1p(oos_ret) * 12.0
+    if oos_ret >= 50.0:
+        score += 15.0
+    if oos_ret >= 100.0:
+        score += 20.0
+    if oos_ret >= 300.0:
+        score += 20.0
+    if oos_ret >= 500.0:
+        score += 20.0
+    if oos_ret >= 1000.0:
+        score += 25.0
         
-    # 7. 풍부한 거래 표본수 가산점
-    if trades >= 100:
-        score += min((trades - 100) * 0.02, 5.0)
+    # 5. [MDD 방어력 배점]
+    if oos_mdd > max_mdd_allowed:
+        score -= (oos_mdd - max_mdd_allowed) * 5.0
+    else:
+        score += (max_mdd_allowed - oos_mdd) * 1.5 # 낮은 MDD 우대
+        
+    # 6. [WFO 일반화 능력 검증 (과최적화 방지)]
+    if 0.5 <= overfitting_ratio <= 1.8:
+        score += 15.0
+    elif overfitting_ratio < 0.3:
+        score -= 25.0
+        
+    # 7. [현물 실전 거래수 최적 구간 (30~350회 우대, 과도한 잦은 매매 페널티)]
+    if 40 <= trades <= 350:
+        score += 15.0
+    elif trades > 800:
+        score -= 20.0 # 현물에서 잦은 매매는 거래소 수수료 누적으로 실전 손실 유발
         
     return score
 
@@ -637,7 +635,7 @@ def _worker_simulate(task_args):
         'sim_res': sim_res
     }
 
-def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=1000000, min_trades=100, max_mdd=40.0, num_workers=None, progress_callback=None, cancel_check=None):
+def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iterations=1000000, min_trades=50, max_mdd=35.0, num_workers=None, progress_callback=None, cancel_check=None):
     """
     [다세대 다중 아키텍처 유전 진화 퀀트 탐색 엔진 (Genetic Evolutionary Algorithm)]
     - 5대 독립 매매 아키텍처 중 종목 시계열에 최적화된 알파 구조를 스스로 채택
@@ -743,19 +741,35 @@ def run_ai_evolution_search(df, symbol="BTC/USDT", timeframe="1h", max_iteration
         if global_best is None or gen_results[0]['score'] > global_best['score']:
             global_best = gen_results[0]
             
-        # 다음 세대 육성 (Elitism + Crossover + Mutation)
+        # 다음 세대 육성 (Elitism with Architecture Diversity + Crossover + Mutation)
         if gen < n_generations:
-            elite_count = max(int(pop_size * 0.25), 3)
-            elites = [x['params'] for x in gen_results[:elite_count]]
+            elite_count = max(int(pop_size * 0.25), 5)
+            top_elites = [x['params'] for x in gen_results[:elite_count]]
             
+            # 아키텍처 다양성 보존 (Island Diversity): 5대 아키텍처별 최우수 개체 1개씩 확보
+            diversity_elites = []
+            seen_types = set()
+            for r in gen_results:
+                st = r['params'].get('strategy_type')
+                if st not in seen_types and r['score'] > -1000:
+                    seen_types.add(st)
+                    diversity_elites.append(r['params'])
+                    if len(seen_types) == len(STRATEGY_TYPE_KEYS):
+                        break
+                        
+            elites = diversity_elites.copy()
+            for p in top_elites:
+                if p not in elites:
+                    elites.append(p)
+                    
             next_pop = []
-            keep_count = max(int(pop_size * 0.05), 2)
+            keep_count = max(int(pop_size * 0.05), len(diversity_elites))
             next_pop.extend(elites[:keep_count])
             
             while len(next_pop) < pop_size:
                 r = random.random()
                 if r < 0.65:
-                    p1, p2 = random.sample(elites, 2)
+                    p1, p2 = random.sample(elites, 2) if len(elites) >= 2 else (elites[0], elites[0])
                     child = _crossover_candidates(p1, p2)
                     child = _mutate_candidate(child, mutation_rate=0.20)
                     next_pop.append(child)

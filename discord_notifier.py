@@ -97,6 +97,7 @@ def send_strategy_alert(webhook_url, mode_name, symbol, timeframe, oos_metrics, 
     
     fields = [
         {"name": "📊 분석 대상", "value": f"**{symbol}** ({timeframe})", "inline": True},
+        {"name": "🪙 매매 방식", "value": "**현물 롱 전용 (Spot Long-Only)**", "inline": True},
         {"name": "🎯 OOS 샤프 지수", "value": f"**{sh}**", "inline": True},
         {"name": "💰 OOS 총수익률", "value": f"**{ret:+.1f}%**", "inline": True},
         {"name": "🛡️ 최대 낙폭 (MDD)", "value": f"**{mdd:.1f}%**", "inline": True},

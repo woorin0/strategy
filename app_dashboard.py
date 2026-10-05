@@ -212,21 +212,21 @@ with st.sidebar:
         with col_set1:
             max_mdd = st.number_input(
                 "최대 허용 MDD (%)", 
-                min_value=10.0, max_value=80.0, value=40.0, step=5.0,
-                help="MDD가 40% 이내면 정상 추세 변동성으로 허용하며, 40%를 초과할 경우 강력한 탈락 페널티를 부과합니다."
+                min_value=10.0, max_value=80.0, value=35.0, step=5.0,
+                help="MDD가 35% 이내면 정상 추세 변동성으로 허용하며, 35%를 초과할 경우 강력한 탈락 페널티를 부과합니다."
             )
         with col_set2:
             min_trades = st.number_input(
                 "최소 검증 거래수", 
-                min_value=10, max_value=5000, value=500, step=10,
-                help="OOS 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다."
+                min_value=10, max_value=5000, value=50, step=5,
+                help="OOS(미지의 검증) 구간에서 최소 이 횟수 이상 실제 체결된 전략만 최종 선별됩니다. (현물 스윙은 30~80회 권장)"
             )
         
         default_workers = min(detected_cores, 8)
         workers_to_use = st.number_input(f"병렬 가속 워커 수 (최대 {detected_cores})", 1, detected_cores, default_workers)
         
-        st.info(f"🧬 **5대 멀티 아키텍처 고수익 유전 진화**: SuperTrend 추세추종, Dual EMA 크로스, Squeeze 모멘텀 폭발, SMC 기관 구조돌파, RSI 평균회귀 등 5대 독립 전략 아키텍처를 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, 종목 시계열에 최적화된 독립 알고리즘 코드를 동적 합성합니다.")
-        btn_ai_run = st.button("🤖 AI 심층 진화 & 고수익 전략 생성", type="primary", use_container_width=True)
+        st.info(f"🪙 **5대 멀티 아키텍처 현물 롱 전용(Spot Long-Only) 유전 진화**: SuperTrend 상승추세, Dual EMA 골든크로스, Squeeze 상방폭발, SMC 기관돌파, RSI 저점반등 등 5대 독립 전략 아키텍처를 {workers_to_use}개 CPU 코어로 {ai_iterations:,}회 유전 진화 탐색하여, 숏(공매도) 없이 롱 매수 후 고점 현금화하는 현물 전용 알고리즘을 동적 합성합니다.")
+        btn_ai_run = st.button("🤖 AI 심층 진화 & 현물 롱 전략 생성", type="primary", use_container_width=True)
         btn_manual_run = False
 
     st.markdown("---")

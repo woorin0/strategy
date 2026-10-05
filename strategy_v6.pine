@@ -16,7 +16,7 @@ strategy("AI [🚀 SuperTrend_Trend] BTCUSDT 1h Strategy v6",
          default_qty_type=strategy.percent_of_equity, 
          default_qty_value=100, 
          commission_type=strategy.commission.percent, 
-         commission_value=0.05, 
+         commission_value=0.08, 
          process_orders_on_close=true)
 
 // ==========================================
@@ -51,18 +51,14 @@ long_condition  = trig_long
 short_condition = trig_short
 
 // ==========================================
-// 3. ORDER EXECUTION & RISK MANAGEMENT
+// 3. ORDER EXECUTION & RISK MANAGEMENT (현물 롱 전용)
 // ==========================================
 var float long_entry_price = na
-var float short_entry_price = na
 
-if long_condition and strategy.position_size <= 0
+// 롱 포지션 진입 (현물 매수)
+if long_condition and strategy.position_size == 0
     strategy.entry("Long", strategy.long, comment="Entry_Long")
     long_entry_price := close
-
-if short_condition and strategy.position_size >= 0
-    strategy.entry("Short", strategy.short, comment="Entry_Short")
-    short_entry_price := close
 
 // 익절(Take Profit) & 손절(Stop Loss) 계산
 fixed_long_tp = long_entry_price * (1.0 + tp_fixed_pct * 0.01)
@@ -73,32 +69,23 @@ atr_long_sl   = long_entry_price - (sl_atr_mult * atr_val)
 final_long_tp = tp_mode == "Fixed" ? fixed_long_tp : (tp_mode == "ATR" ? atr_long_tp : (tp_mode == "Both" ? math.max(fixed_long_tp, atr_long_tp) : na))
 final_long_sl = sl_mode == "Fixed" ? fixed_long_sl : (sl_mode == "ATR" ? atr_long_sl : (sl_mode == "Both" ? math.max(fixed_long_sl, atr_long_sl) : na))
 
-fixed_short_tp = short_entry_price * (1.0 - tp_fixed_pct * 0.01)
-fixed_short_sl = short_entry_price * (1.0 + sl_fixed_pct * 0.01)
-atr_short_tp   = short_entry_price - (tp_atr_mult * atr_val)
-atr_short_sl   = short_entry_price + (sl_atr_mult * atr_val)
-
-final_short_tp = tp_mode == "Fixed" ? fixed_short_tp : (tp_mode == "ATR" ? atr_short_tp : (tp_mode == "Both" ? math.min(fixed_short_tp, atr_short_tp) : na))
-final_short_sl = sl_mode == "Fixed" ? fixed_short_sl : (sl_mode == "ATR" ? atr_short_sl : (sl_mode == "Both" ? math.min(fixed_short_sl, atr_short_sl) : na))
-
+// 익절/손절 청산 주문
 if strategy.position_size > 0
     strategy.exit("TP/SL_Long", "Long", limit=final_long_tp, stop=final_long_sl)
-if strategy.position_size < 0
-    strategy.exit("TP/SL_Short", "Short", limit=final_short_tp, stop=final_short_sl)
+
+// 하락/반전 신호 발생 시 현금화 청산 (현물 매도)
+if strategy.position_size > 0 and short_condition
+    strategy.close("Long", comment="Exit_Signal")
 
 // TR MA 비상 청산
-if strategy.position_size > 0 and close < tr_ma
-    strategy.close("Long", comment="TR_MA_Exit_Long")
-if strategy.position_size < 0 and close > tr_ma
-    strategy.close("Short", comment="TR_MA_Exit_Short")
+if use_tr_exit and strategy.position_size > 0 and close < tr_ma
+    strategy.close("Long", comment="TR_MA_Exit")
 
 // 시간 만기 청산 (Time Expiry)
 bars_in_trade = ta.barssince(strategy.position_size != strategy.position_size[1])
 if use_time_exit and (bars_in_trade >= max_bars_hold)
     if strategy.position_size > 0
-        strategy.close("Long", comment="Time_Expiry_Long")
-    if strategy.position_size < 0
-        strategy.close("Short", comment="Time_Expiry_Short")
+        strategy.close("Long", comment="Time_Expiry")
 
 // ==========================================
 // 4. CHART VISUALIZATION (전략 맞춤 시각화)

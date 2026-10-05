@@ -415,7 +415,7 @@ def fast_simulate_range_nb(
     tp_mode_code, sl_mode_code,
     max_bars_hold, use_time_exit, use_tr
 ):
-    in_pos = 0 # 1: Long, -1: Short, 0: Flat
+    in_pos = 0 # 1: Long (현물 보유), 0: Flat (현금 대기)
     entry_p = 0.0
     bars_held = 0
     
@@ -465,12 +465,12 @@ def fast_simulate_range_nb(
             hit_sl = cl <= sl_p
             hit_tr = use_tr and (cc < tr_ma[i])
             hit_time = use_time_exit and (bars_held >= max_bars_hold)
-            hit_rev = short_sig[i]
+            hit_sell = short_sig[i] # 현물 매도/현금화 신호
             
-            if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
+            if hit_tp or hit_sl or hit_tr or hit_time or hit_sell:
                 exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
                 exit_price = max(exit_price, 1e-4)
-                pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.05
+                pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.16 # 수수료 0.08% 반영 (매수 0.08% + 매도 0.08% = 왕복 0.16%)
                 curr_equity *= (1.0 + pnl_pct / 100.0)
                 if curr_equity > peak_equity:
                     peak_equity = curr_equity
@@ -485,71 +485,12 @@ def fast_simulate_range_nb(
                 sum_sq_pnl += ret_frac * ret_frac
                 
                 in_pos = 0
-                if hit_rev:
-                    in_pos = -1
-                    entry_p = co
-                    bars_held = 0
-                    
-        elif in_pos == -1:
-            bars_held += 1
-            fixed_tp = max(entry_p * (1.0 - tp_fixed_pct * 0.01), entry_p * 0.01)
-            atr_tp = max(entry_p - (tp_atr_mult * ca), entry_p * 0.01)
-            if tp_mode_code == 1: # Fixed
-                tp_p = fixed_tp
-            elif tp_mode_code == 2: # ATR
-                tp_p = atr_tp
-            elif tp_mode_code == 3: # Both
-                tp_p = min(fixed_tp, atr_tp)
-            else: # None
-                tp_p = 0.0
+                entry_p = 0.0
+                bars_held = 0
                 
-            fixed_sl = entry_p * (1.0 + sl_fixed_pct * 0.01)
-            atr_sl = entry_p + (sl_atr_mult * ca)
-            if sl_mode_code == 1: # Fixed
-                sl_p = fixed_sl
-            elif sl_mode_code == 2: # ATR
-                sl_p = atr_sl
-            elif sl_mode_code == 3: # Both
-                sl_p = min(fixed_sl, atr_sl)
-            else: # None
-                sl_p = 999999.0
-                
-            hit_tp = cl <= tp_p
-            hit_sl = ch >= sl_p
-            hit_tr = use_tr and (cc > tr_ma[i])
-            hit_time = use_time_exit and (bars_held >= max_bars_hold)
-            hit_rev = long_sig[i]
-            
-            if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
-                exit_price = max(exit_price, 1e-4)
-                pnl_pct = (entry_p / exit_price - 1.0) * 100.0 - 0.05
-                curr_equity *= (1.0 + pnl_pct / 100.0)
-                if curr_equity > peak_equity:
-                    peak_equity = curr_equity
-                dd = (peak_equity - curr_equity) / peak_equity * 100.0
-                if dd > max_dd:
-                    max_dd = dd
-                    
-                trades_count += 1
-                if pnl_pct > 0: win_count += 1
-                ret_frac = pnl_pct / 100.0
-                sum_pnl += ret_frac
-                sum_sq_pnl += ret_frac * ret_frac
-                
-                in_pos = 0
-                if hit_rev:
-                    in_pos = 1
-                    entry_p = co
-                    bars_held = 0
-                    
-        if in_pos == 0:
+        elif in_pos == 0:
             if long_sig[i]:
                 in_pos = 1
-                entry_p = co
-                bars_held = 0
-            elif short_sig[i]:
-                in_pos = -1
                 entry_p = co
                 bars_held = 0
                 
@@ -775,13 +716,13 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
                 hit_sl = cl <= sl_p
                 hit_tr = use_tr and (cc < sub_tr_ma[i])
                 hit_time = use_time_exit and (bars_held >= max_bars_hold)
-                hit_rev = sub_ss[i]
+                hit_sell = sub_ss[i]
                 
-                if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    reason = "TP" if hit_tp else ("SL" if hit_sl else ("TR_MA" if hit_tr else ("Time" if hit_time else "Reverse")))
+                if hit_tp or hit_sl or hit_tr or hit_time or hit_sell:
+                    reason = "TP" if hit_tp else ("SL" if hit_sl else ("TR_MA" if hit_tr else ("Time" if hit_time else "Sell_Signal")))
                     exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
                     exit_price = max(exit_price, 1e-4)
-                    pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.05
+                    pnl_pct = (exit_price / entry_p - 1.0) * 100.0 - 0.16 # 수수료 0.08% 반영 (매수 0.08% + 매도 0.08% = 왕복 0.16%)
                     trade_logs.append({
                         'entry_time': str(entry_time), 'exit_time': str(sub_idx[i]),
                         'type': 'Long', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
@@ -791,56 +732,12 @@ def run_simulation(df, params, split_ratio=0.70, fast_mode=False):
                     equity_curve_points.append((sub_idx[i], curr_equity))
 
                     in_pos = 0
-                    if hit_rev:
-                        in_pos = -1
-                        entry_p = co
-                        entry_time = sub_idx[i]
-                        bars_held = 0
+                    entry_p = 0.0
+                    bars_held = 0
                         
-            elif in_pos == -1:
-                bars_held += 1
-                fixed_tp = max(entry_p * (1.0 - tp_fixed_pct * 0.01), entry_p * 0.01)
-                atr_tp   = max(entry_p - (tp_atr_mult * ca), entry_p * 0.01)
-                tp_p = fixed_tp if tp_mode == 'Fixed' else (atr_tp if tp_mode == 'ATR' else (min(fixed_tp, atr_tp) if tp_mode == 'Both' else 0.0))
-                
-                fixed_sl = entry_p * (1.0 + sl_fixed_pct * 0.01)
-                atr_sl   = entry_p + (sl_atr_mult * ca)
-                sl_p = fixed_sl if sl_mode == 'Fixed' else (atr_sl if sl_mode == 'ATR' else (min(fixed_sl, atr_sl) if sl_mode == 'Both' else 999999.0))
-                
-                hit_tp = cl <= tp_p
-                hit_sl = ch >= sl_p
-                hit_tr = use_tr and (cc > sub_tr_ma[i])
-                hit_time = use_time_exit and (bars_held >= max_bars_hold)
-                hit_rev = sub_ls[i]
-                
-                if hit_tp or hit_sl or hit_tr or hit_time or hit_rev:
-                    reason = "TP" if hit_tp else ("SL" if hit_sl else ("TR_MA" if hit_tr else ("Time" if hit_time else "Reverse")))
-                    exit_price = tp_p if hit_tp else (sl_p if hit_sl else co)
-                    exit_price = max(exit_price, 1e-4)
-                    pnl_pct = (entry_p / exit_price - 1.0) * 100.0 - 0.05
-                    trade_logs.append({
-                        'entry_time': str(entry_time), 'exit_time': str(sub_idx[i]),
-                        'type': 'Short', 'entry_price': round(entry_p, 2), 'exit_price': round(exit_price, 2),
-                        'pnl_pct': round(pnl_pct, 2), 'reason': reason
-                    })
-                    curr_equity *= (1.0 + pnl_pct / 100.0)
-                    equity_curve_points.append((sub_idx[i], curr_equity))
-
-                    in_pos = 0
-                    if hit_rev:
-                        in_pos = 1
-                        entry_p = co
-                        entry_time = sub_idx[i]
-                        bars_held = 0
-                        
-            if in_pos == 0:
+            elif in_pos == 0:
                 if sub_ls[i]:
                     in_pos = 1
-                    entry_p = co
-                    entry_time = sub_idx[i]
-                    bars_held = 0
-                elif sub_ss[i]:
-                    in_pos = -1
                     entry_p = co
                     entry_time = sub_idx[i]
                     bars_held = 0
