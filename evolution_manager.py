@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import datetime
+import uuid
 import pandas as pd
 from ai_generator import run_ai_evolution_search
 from discord_notifier import send_progress_alert, send_strategy_alert, DEFAULT_WEBHOOK_URL
@@ -163,6 +164,20 @@ def load_strategy_history(filepath):
     except Exception:
         return None
 
+
+def recent_strategy_records(limit=100):
+    """Newest records across charts; corrupt/legacy files do not block generation."""
+    files = sorted(
+        (os.path.join(HISTORY_DIR, name) for name in os.listdir(HISTORY_DIR) if name.endswith('.json')),
+        key=os.path.getmtime, reverse=True,
+    )
+    records = []
+    for path in files[:limit]:
+        record = load_strategy_history(path)
+        if isinstance(record, dict) and isinstance(record.get('best_params'), dict):
+            records.append(record)
+    return records
+
 def _downsample_equity_for_storage(equity_series, max_pts=500):
     """에쿼티 커브 저장 시 브라우저 랙 방지를 위해 경량화"""
     if equity_series is None or len(equity_series) == 0:
@@ -183,8 +198,8 @@ def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_md
     notified_milestones = set()
     
     # 작업 상태 초기화 (세대당 최대 1,000개 개체군 청크 기준 세대 수 동적 산정)
-    pop_size = min(max(max_iterations // 10, 20), 1000)
-    calc_total_gen = max(max_iterations // pop_size, 1)
+    pop_size = min(max(max_iterations, 1), min(max(max_iterations // 10, 20), 1000))
+    calc_total_gen = max((max_iterations + pop_size - 1) // pop_size, 1)
     
     job_info = {
         "status": "RUNNING",
@@ -283,7 +298,8 @@ def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_md
             max_mdd=max_mdd,
             num_workers=num_workers,
             progress_callback=on_progress,
-            cancel_check=lambda: _cancel_requested
+            cancel_check=lambda: _cancel_requested,
+            recent_history=recent_strategy_records()
         )
         
         elapsed_sec = round(time.time() - start_time, 2)
@@ -296,6 +312,8 @@ def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_md
         
         # 영구 저장용 전략 데이터 객체 생성
         strategy_record = {
+            "generation_id": uuid.uuid4().hex,
+            "search_diagnostics": ai_res.get("search_diagnostics", {}),
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy_type": ai_res.get("strategy_type", "SuperTrend_Trend"),
@@ -331,6 +349,7 @@ def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_md
             json.dump(strategy_record, f, ensure_ascii=False, indent=2)
             
         # 2) results/strategy_history/ 영구 아카이빙 (.json 및 .pine)
+        time_tag += '_' + strategy_record['generation_id'][:8]
         hist_json = os.path.join(HISTORY_DIR, f"strategy_{clean_sym}_{timeframe}_{time_tag}.json")
         with open(hist_json, "w", encoding="utf-8") as f:
             json.dump(strategy_record, f, ensure_ascii=False, indent=2)
@@ -346,8 +365,9 @@ def _evolution_worker_task(symbol, timeframe, max_iterations, min_trades, max_md
             
         # 4) 작업 상태를 COMPLETED로 전환
         job_info["status"] = "COMPLETED"
+        job_info["generation_id"] = strategy_record["generation_id"]
         job_info["progress_pct"] = 100
-        job_info["completed"] = max_iterations
+        job_info["completed"] = ai_res["total_evaluated"]
         job_info["elapsed_sec"] = elapsed_sec
         job_info["best_return"] = best_sim["oos"]["return_pct"]
         job_info["best_win_rate"] = best_sim["oos"]["win_rate"]

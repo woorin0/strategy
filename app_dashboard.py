@@ -416,6 +416,13 @@ if btn_manual_run:
 # ----------------- [4. 전략 결과 자동 복원 및 렌더링] -----------------
 # 세션에 활성 전략이 없으면 디스크에서 최신 완료 전략 자동 로드
 active_strat = st.session_state.get("active_strategy")
+completed_id = current_job.get("generation_id") if current_job.get("status") == "COMPLETED" else None
+if completed_id and st.session_state.get("seen_generation_id") != completed_id:
+    completed_strategy = get_latest_strategy()
+    if completed_strategy and completed_strategy.get("generation_id") == completed_id:
+        active_strat = completed_strategy
+        st.session_state["active_strategy"] = active_strat
+        st.session_state["seen_generation_id"] = completed_id
 if active_strat is None:
     latest_saved = get_latest_strategy()
     if latest_saved:
@@ -429,6 +436,12 @@ if active_strat is None:
         )
 
 if active_strat is not None:
+    if (active_strat.get('symbol'), active_strat.get('timeframe')) != (symbol, timeframe):
+        st.info(f"표시 중인 결과는 {active_strat.get('symbol')} ({active_strat.get('timeframe')}) 전략입니다. 선택한 차트의 전략은 생성 완료 후 표시됩니다.")
+    diagnostics = active_strat.get('search_diagnostics', {})
+    if diagnostics:
+        selection_labels = {'fresh_structure': '새로운 지표·청산 조합', 'fresh_parameters': '새로운 파라미터 조합', 'quality_fallback': '성능 조건상 기존 조합 재선택'}
+        st.caption(f"선택 방식: {selection_labels.get(diagnostics.get('selection'), '다양성 탐색')} · 전략 유형별 균등 탐색 · 최근 생성 이력 중복 비교")
     strat_type = active_strat.get('strategy_type') or active_strat.get('best_params', {}).get('strategy_type', 'SuperTrend_Trend')
     meta = STRATEGY_ARCHETYPES.get(strat_type, STRATEGY_ARCHETYPES['SuperTrend_Trend'])
     
